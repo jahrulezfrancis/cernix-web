@@ -137,7 +137,7 @@ export function buildMockReport(
       whatCouldChangeVerdict: [
         "Provide stronger source, test, CI, or runtime evidence for the unresolved obligation.",
       ],
-      issuedAt: new Date().toISOString(),
+      issuedAt: investigation.completedAt ?? investigation.startedAt ?? investigation.repositorySnapshot.snapshotAt,
     };
 
     challenges[claim.id] =
@@ -188,7 +188,7 @@ export function buildMockReport(
     projectName: investigation.project.name,
     repositorySnapshot: investigation.repositorySnapshot,
     submissionType: investigation.submission.type,
-    investigationDate: new Date().toISOString(),
+    investigationDate: investigation.completedAt ?? investigation.startedAt ?? investigation.repositorySnapshot.snapshotAt,
     durationSeconds: Math.max(elapsedSeconds, 1),
     claimsInvestigated: completedClaims.length,
     verified: count(completedClaims, "verified"),

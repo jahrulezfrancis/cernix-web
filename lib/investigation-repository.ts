@@ -1,289 +1,58 @@
 import { EXTRACTED_CLAIMS } from "./mock-data";
-import type {
-  Claim,
-  Investigation,
-  InvestigationSimulationState,
-  Report,
-  RepositorySnapshot,
-  SubmissionType,
-} from "./types";
+import { canTransitionStatus, isClaimReviewEditable } from "./investigation-lifecycle";
+import type { Claim, Investigation, InvestigationSimulationState, InvestigationStatus, Report, RepositorySnapshot, SubmissionType } from "./types";
 
 const STORAGE_KEY = "cernix.investigations.v1";
+const VERSION = 1;
+export const MAX_SELECTED_CLAIMS = 5;
+export const MAX_SIMULATION_STEP = 6;
+type Store = { version: number; investigations: Record<string, Investigation> };
+export type StorageHealth = { status: "available"; message?: string } | { status: "unavailable" | "malformed"; message: string };
+export type CreateInvestigationInput = { repositoryUrl: string; branch: string; submissionType: SubmissionType; description: string; focusQuestion?: string; repositoryMetadata: { commitSha: string; language: string; sizeKb: number; fileCount: number; hasTests: boolean; hasWorkflows: boolean } };
 
-type Store = {
-  investigations: Record<string, Investigation>;
-};
+const emptyStore = (): Store => ({ version: VERSION, investigations: {} });
+let memoryStore = emptyStore();
+let health: StorageHealth = { status: "available" };
+const statuses = new Set<InvestigationStatus>(["draft", "extracting_claims", "awaiting_claim_review", "investigating", "challenged", "reinvestigating", "judging", "completed", "completed_with_limitations", "failed", "awaiting_review"]);
+const claimStatuses = new Set(["queued", "planning", "investigating", "challenged", "reinvestigating", "judging", "completed", "failed"]);
+const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
 
-export type StorageHealth =
-  | { status: "available"; message?: string }
-  | { status: "unavailable"; message: string }
-  | { status: "malformed"; message: string };
-
-export type CreateInvestigationInput = {
-  repositoryUrl: string;
-  branch: string;
-  submissionType: SubmissionType;
-  description: string;
-  focusQuestion?: string;
-  repositoryMetadata: {
-    commitSha: string;
-    language: string;
-    sizeKb: number;
-    fileCount: number;
-    hasTests: boolean;
-    hasWorkflows: boolean;
-  };
-};
-
-let memoryStore: Store = { investigations: {} };
-let lastStorageHealth: StorageHealth = { status: "available" };
-
-function canUseStorage() {
-  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+function storage(): Storage | null { if (typeof window === "undefined") return null; try { return window.localStorage; } catch { return null; } }
+function validClaim(value: unknown, id: string): value is Claim { return object(value) && typeof value.id === "string" && value.investigationId === id && typeof value.originalStatement === "string" && typeof value.normalizedInterpretation === "string" && typeof value.category === "string" && typeof value.criticality === "string" && typeof value.verifiability === "string" && strings(value.preservedQualifiers) && typeof value.selected === "boolean" && claimStatuses.has(String(value.status)) && typeof value.evidenceCount === "number" && typeof value.openLimitations === "number" && typeof value.requiresHumanReview === "boolean"; }
+function validSimulation(value: unknown): value is InvestigationSimulationState { return object(value) && Number.isInteger(value.stepIndex) && Number(value.stepIndex) >= 0 && Number(value.stepIndex) <= MAX_SIMULATION_STEP && Number.isFinite(value.elapsedSeconds) && Number(value.elapsedSeconds) >= 0 && typeof value.running === "boolean" && strings(value.visibleEventIds) && typeof value.completed === "boolean" && typeof value.updatedAt === "string"; }
+function validReport(value: unknown, id: string): value is Report { return object(value) && value.id === `rpt-${id}` && value.investigationId === id && typeof value.investigationDate === "string" && Array.isArray(value.claims) && value.claims.every((claim) => validClaim(claim, id)); }
+function validInvestigation(value: unknown, key: string): value is Investigation {
+  if (!object(value) || value.id !== key || !statuses.has(value.status as InvestigationStatus)) return false;
+  const project = value.project, snapshot = value.repositorySnapshot, submission = value.submission;
+  if (!object(project) || typeof project.id !== "string" || typeof project.name !== "string" || typeof project.repositoryUrl !== "string" || typeof project.owner !== "string" || typeof project.repo !== "string" || typeof project.description !== "string") return false;
+  if (!object(snapshot) || typeof snapshot.owner !== "string" || typeof snapshot.repo !== "string" || typeof snapshot.branch !== "string" || typeof snapshot.commitSha !== "string" || typeof snapshot.primaryLanguage !== "string" || !strings(snapshot.languages) || typeof snapshot.sizeKb !== "number" || typeof snapshot.fileCount !== "number" || typeof snapshot.hasTests !== "boolean" || typeof snapshot.hasWorkflows !== "boolean" || typeof snapshot.snapshotAt !== "string") return false;
+  if (!object(submission) || typeof submission.id !== "string" || typeof submission.projectId !== "string" || typeof submission.type !== "string" || typeof submission.content !== "string" || typeof submission.submittedAt !== "string") return false;
+  if (!Array.isArray(value.claims) || !value.claims.every((claim) => validClaim(claim, key)) || value.claims.filter((claim) => claim.selected).length > MAX_SELECTED_CLAIMS) return false;
+  if (!Array.isArray(value.agentRuns) || !value.agentRuns.every((run) => object(run) && run.investigationId === key && ["queued", "running", "completed", "failed"].includes(String(run.status)))) return false;
+  if (!Array.isArray(value.workflowStages) || typeof value.requiresHumanReview !== "boolean") return false;
+  if (value.simulationState !== undefined && !validSimulation(value.simulationState)) return false;
+  if (value.report !== undefined && !validReport(value.report, key)) return false;
+  return !((value.status === "completed" || value.status === "completed_with_limitations") && (!validReport(value.report, key) || !object(value.simulationState) || value.simulationState.completed !== true));
 }
-
-function emptyStore(): Store {
-  return { investigations: {} };
+function read(): Store {
+  const target = storage(); if (!target) { health = { status: "unavailable", message: "Local storage is unavailable. Changes are kept only for this session." }; return memoryStore; }
+  try { const raw = target.getItem(STORAGE_KEY); if (!raw) { health = { status: "available" }; return memoryStore; } const parsed: unknown = JSON.parse(raw); if (!object(parsed) || parsed.version !== VERSION || !object(parsed.investigations)) throw new Error(); const investigations: Record<string, Investigation> = {}; for (const [key, value] of Object.entries(parsed.investigations)) { if (!validInvestigation(value, key)) throw new Error(); investigations[key] = value; } memoryStore = { version: VERSION, investigations }; health = { status: "available" }; return memoryStore; } catch { health = { status: "malformed", message: "Saved investigation data failed validation and has been ignored." }; return memoryStore; }
 }
+function write(store: Store) { memoryStore = store; const target = storage(); if (!target) { health = { status: "unavailable", message: "Local storage is unavailable. Changes are kept only for this session." }; return; } try { target.setItem(STORAGE_KEY, JSON.stringify(store)); health = { status: "available" }; } catch { health = { status: "unavailable", message: "Local storage could not save this investigation. Changes are kept only for this session." }; } }
+function update(id: string, fn: (current: Investigation) => Investigation) { const store = read(), current = store.investigations[id]; if (!current) return null; const next = fn(current); if (!validInvestigation(next, id)) return current; store.investigations[id] = next; write(store); return next; }
+function randomToken() { try { return crypto.randomUUID(); } catch { const bytes = new Uint8Array(16); try { crypto.getRandomValues(bytes); } catch { for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256); } return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""); } }
 
-function isInvestigation(value: unknown): value is Investigation {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<Investigation>;
-  return (
-    typeof candidate.id === "string" &&
-    !!candidate.project &&
-    !!candidate.repositorySnapshot &&
-    !!candidate.submission &&
-    Array.isArray(candidate.claims)
-  );
-}
-
-function normalizeStore(value: unknown): Store {
-  if (!value || typeof value !== "object") return emptyStore();
-  const raw = value as { investigations?: unknown };
-  if (!raw.investigations || typeof raw.investigations !== "object") return emptyStore();
-
-  const investigations: Record<string, Investigation> = {};
-  for (const [id, investigation] of Object.entries(raw.investigations)) {
-    if (isInvestigation(investigation)) {
-      investigations[id] = investigation;
-    }
-  }
-  return { investigations };
-}
-
-function readStore(): Store {
-  if (!canUseStorage()) {
-    lastStorageHealth = {
-      status: "unavailable",
-      message: "Local storage is unavailable. Changes are kept only for this session.",
-    };
-    return memoryStore;
-  }
-
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      lastStorageHealth = { status: "available" };
-      return emptyStore();
-    }
-    const parsed = JSON.parse(raw);
-    const store = normalizeStore(parsed);
-    memoryStore = store;
-    lastStorageHealth = { status: "available" };
-    return store;
-  } catch {
-    lastStorageHealth = {
-      status: "malformed",
-      message: "Saved investigation data was malformed and has been ignored for this session.",
-    };
-    return emptyStore();
-  }
-}
-
-function writeStore(store: Store) {
-  memoryStore = store;
-  if (!canUseStorage()) {
-    lastStorageHealth = {
-      status: "unavailable",
-      message: "Local storage is unavailable. Changes are kept only for this session.",
-    };
-    return;
-  }
-
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-    lastStorageHealth = { status: "available" };
-  } catch {
-    lastStorageHealth = {
-      status: "unavailable",
-      message: "Local storage could not save this investigation.",
-    };
-  }
-}
-
-function parseRepositoryUrl(repositoryUrl: string) {
-  const match = repositoryUrl.match(/^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)/);
-  const owner = match?.[1] ?? "unknown";
-  const repo = (match?.[2] ?? "repository").replace(/\.git$/, "");
-  return { owner, repo };
-}
-
-function createInvestigationId(owner: string, repo: string) {
-  const slug = `${owner}-${repo}`.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  return `inv-${slug}-${Date.now().toString(36)}`;
-}
-
-function cloneExtractedClaims(investigationId: string): Claim[] {
-  return EXTRACTED_CLAIMS.map((claim, index) => ({
-    ...claim,
-    id: `${investigationId}-clm-${String(index + 1).padStart(3, "0")}`,
-    investigationId,
-    selected: index < 5 ? claim.selected : false,
-    status: "queued",
-    verdict: undefined,
-    confidence: undefined,
-    evidenceCount: 0,
-    openLimitations: 0,
-  }));
-}
-
-export function getStorageHealth(): StorageHealth {
-  return lastStorageHealth;
-}
-
-export function listInvestigations(): Investigation[] {
-  return Object.values(readStore().investigations);
-}
-
-export function getInvestigation(id: string): Investigation | null {
-  return readStore().investigations[id] ?? null;
-}
-
-export function createInvestigation(input: CreateInvestigationInput): Investigation {
-  const { owner, repo } = parseRepositoryUrl(input.repositoryUrl);
-  const now = new Date().toISOString();
-  const id = createInvestigationId(owner, repo);
-  const branch = input.branch.trim() || "main";
-
-  const repositorySnapshot: RepositorySnapshot = {
-    owner,
-    repo,
-    branch,
-    commitSha: input.repositoryMetadata.commitSha,
-    primaryLanguage: input.repositoryMetadata.language,
-    languages: [input.repositoryMetadata.language],
-    sizeKb: input.repositoryMetadata.sizeKb,
-    fileCount: input.repositoryMetadata.fileCount,
-    hasTests: input.repositoryMetadata.hasTests,
-    hasWorkflows: input.repositoryMetadata.hasWorkflows,
-    snapshotAt: now,
-  };
-
-  const investigation: Investigation = {
-    id,
-    project: {
-      id: `proj-${id}`,
-      name: repo,
-      repositoryUrl: input.repositoryUrl,
-      owner,
-      repo,
-      description: input.description,
-    },
-    repositorySnapshot,
-    submission: {
-      id: `sub-${id}`,
-      projectId: `proj-${id}`,
-      type: input.submissionType,
-      content: input.description,
-      focusQuestion: input.focusQuestion?.trim() || undefined,
-      submittedAt: now,
-    },
-    status: "awaiting_claim_review",
-    claims: cloneExtractedClaims(id),
-    agentRuns: [],
-    workflowStages: [],
-    startedAt: now,
-    requiresHumanReview: false,
-  };
-
-  const store = readStore();
-  store.investigations[id] = investigation;
-  writeStore(store);
-  return investigation;
-}
-
-export function updateInvestigation(
-  id: string,
-  updater: (investigation: Investigation) => Investigation
-): Investigation | null {
-  const store = readStore();
-  const current = store.investigations[id];
-  if (!current) return null;
-  const next = updater(current);
-  store.investigations[id] = next;
-  writeStore(store);
-  return next;
-}
-
-export function saveClaims(id: string, claims: Claim[]) {
-  return updateInvestigation(id, (investigation) => ({
-    ...investigation,
-    claims,
-    status:
-      investigation.status === "draft" || investigation.status === "extracting_claims"
-        ? "awaiting_claim_review"
-        : investigation.status,
-  }));
-}
-
-export function saveSelectedClaims(id: string, claims: Claim[]) {
-  return saveClaims(id, claims);
-}
-
-export function beginInvestigation(id: string) {
-  return updateInvestigation(id, (investigation) => ({
-    ...investigation,
-    status:
-      investigation.status === "awaiting_claim_review"
-        ? "investigating"
-        : investigation.status,
-  }));
-}
-
-export function saveSimulationState(
-  id: string,
-  simulationState: InvestigationSimulationState
-) {
-  return updateInvestigation(id, (investigation) => ({
-    ...investigation,
-    simulationState,
-    status: simulationState.completed ? investigation.status : "investigating",
-  }));
-}
-
-export function completeInvestigation(
-  id: string,
-  report: Report,
-  simulationState: InvestigationSimulationState
-) {
-  return updateInvestigation(id, (investigation) => ({
-    ...investigation,
-    claims: report.claims,
-    status: "completed",
-    completedAt: new Date().toISOString(),
-    durationSeconds: report.durationSeconds,
-    requiresHumanReview: report.claims.some((claim) => claim.requiresHumanReview),
-    report,
-    simulationState: {
-      ...simulationState,
-      completed: true,
-      running: false,
-      updatedAt: new Date().toISOString(),
-    },
-  }));
-}
-
-export function getReport(id: string): Report | null {
-  return getInvestigation(id)?.report ?? null;
-}
+export const getStorageHealth = () => health;
+export const listInvestigations = () => Object.values(read().investigations).sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""));
+export const getInvestigation = (id: string) => read().investigations[id] ?? null;
+export function createInvestigation(input: CreateInvestigationInput): Investigation { const match = input.repositoryUrl.match(/^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)/), owner = match?.[1] ?? "unknown", repo = (match?.[2] ?? "repository").replace(/\.git$/, ""), slug = `${owner}-${repo}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 32), id = `inv-${slug}-${randomToken()}`, now = new Date().toISOString(), branch = input.branch.trim() || "main"; const repositorySnapshot: RepositorySnapshot = { owner, repo, branch, commitSha: input.repositoryMetadata.commitSha, primaryLanguage: input.repositoryMetadata.language, languages: [input.repositoryMetadata.language], sizeKb: input.repositoryMetadata.sizeKb, fileCount: input.repositoryMetadata.fileCount, hasTests: input.repositoryMetadata.hasTests, hasWorkflows: input.repositoryMetadata.hasWorkflows, snapshotAt: now }; const claims = EXTRACTED_CLAIMS.map((claim, index) => ({ ...claim, id: `${id}-clm-${String(index + 1).padStart(3, "0")}`, investigationId: id, selected: index < MAX_SELECTED_CLAIMS ? claim.selected : false, status: "queued" as const, verdict: undefined, confidence: undefined, evidenceCount: 0, openLimitations: 0 })); const investigation: Investigation = { id, project: { id: `proj-${id}`, name: repo, repositoryUrl: input.repositoryUrl, owner, repo, description: input.description }, repositorySnapshot, submission: { id: `sub-${id}`, projectId: `proj-${id}`, type: input.submissionType, content: input.description, focusQuestion: input.focusQuestion?.trim() || undefined, submittedAt: now }, status: "awaiting_claim_review", claims, agentRuns: [], workflowStages: [], startedAt: now, requiresHumanReview: false }; const store = read(); store.investigations[id] = investigation; write(store); return investigation; }
+export function transitionInvestigation(id: string, target: InvestigationStatus) { return update(id, (current) => canTransitionStatus(current.status, target) ? { ...current, status: target } : current); }
+export function saveClaims(id: string, claims: Claim[]) { return update(id, (current) => { const ids = new Set(current.claims.map((claim) => claim.id)); const valid = isClaimReviewEditable(current.status) && claims.length === current.claims.length && new Set(claims.map((claim) => claim.id)).size === claims.length && claims.every((claim) => claim.investigationId === id && ids.has(claim.id) && validClaim(claim, id)) && claims.filter((claim) => claim.selected).length <= MAX_SELECTED_CLAIMS; return valid ? { ...current, claims, status: current.status === "draft" || current.status === "extracting_claims" ? "awaiting_claim_review" : current.status } : current; }); }
+export const saveSelectedClaims = saveClaims;
+export function beginInvestigation(id: string) { const current = getInvestigation(id); return !current || current.claims.every((claim) => !claim.selected) ? current : transitionInvestigation(id, "investigating"); }
+export function saveSimulationState(id: string, state: InvestigationSimulationState) { return update(id, (current) => current.status === "investigating" && validSimulation(state) && !state.completed ? { ...current, simulationState: state } : current); }
+export function completeInvestigation(id: string, report: Report, state: InvestigationSimulationState) { return update(id, (current) => { if (current.report || !canTransitionStatus(current.status, "completed") || !validReport(report, id) || !validSimulation(state) || !state.completed) return current; const completedAt = report.investigationDate; return { ...current, claims: report.claims, status: "completed", completedAt, durationSeconds: report.durationSeconds, requiresHumanReview: report.claims.some((claim) => claim.requiresHumanReview), report, simulationState: { ...state, running: false, completed: true, updatedAt: completedAt } }; }); }
+export const getReport = (id: string) => getInvestigation(id)?.report ?? null;
+export function __resetRepositoryForTests() { memoryStore = emptyStore(); health = { status: "available" }; }
+export const __storageKeyForTests = STORAGE_KEY;
