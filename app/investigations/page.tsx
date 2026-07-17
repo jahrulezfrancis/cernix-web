@@ -1,7 +1,11 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { DASHBOARD_INVESTIGATIONS } from "@/lib/mock-data";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
+import { getStorageHealth, listInvestigations } from "@/lib/investigation-repository";
 import { CommitBadge } from "@/components/ui/commit-badge";
 import { formatDate, formatDuration } from "@/lib/utils";
 import {
@@ -73,13 +77,13 @@ function VerdictBar({ claims }: { claims: Investigation["claims"] }) {
   );
 }
 
-function InvestigationRow({ inv }: { inv: Investigation }) {
+function InvestigationRow({ inv, demo = false }: { inv: Investigation; demo?: boolean }) {
   const status = STATUS_CONFIG[inv.status];
   const submissionLabel = SUBMISSION_LABELS[inv.submission.type];
   const isCompleted = inv.status === "completed" || inv.status === "completed_with_limitations";
   const isFailed = inv.status === "failed";
   const isAwaitingReview = inv.status === "awaiting_claim_review";
-  const isInProgress = inv.status === "investigating";
+  const isInProgress = ["investigating", "challenged", "reinvestigating", "judging", "awaiting_review"].includes(inv.status);
 
   return (
     <div className="group border-b border-[#1E4560] last:border-b-0">
@@ -93,12 +97,15 @@ function InvestigationRow({ inv }: { inv: Investigation }) {
         {/* Main info */}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            {demo && <span className="rounded border border-[#1E4560] px-1.5 py-0.5 font-mono text-[9px] text-[#4F7590]">Demo</span>}
             <span className="font-mono text-sm font-medium text-[#E9F3F8]">
               {inv.project.owner}/{inv.project.repo}
             </span>
             <span className="font-mono text-xs text-[#4F7590]">{submissionLabel}</span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-3">
+            <span className="font-mono text-[10px] text-[#4F7590]">{inv.claims.filter((claim) => claim.selected).length} selected</span>
+            {inv.simulationState && <span className="font-mono text-[10px] text-[#4F7590]">{Math.round((inv.simulationState.stepIndex / 6) * 100)}% progress</span>}
             <CommitBadge sha={inv.repositorySnapshot.commitSha} />
             <span className="flex items-center gap-1 font-mono text-[10px] text-[#4F7590]">
               <GitBranch className="h-3 w-3" aria-hidden />
@@ -174,11 +181,23 @@ function InvestigationRow({ inv }: { inv: Investigation }) {
 }
 
 export default function InvestigationsPage() {
-  const totalClaims = DASHBOARD_INVESTIGATIONS.reduce(
+  const [persisted, setPersisted] = useState<Investigation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [storageMessage, setStorageMessage] = useState("");
+  useEffect(() => {
+    setPersisted(listInvestigations());
+    const currentHealth = getStorageHealth();
+    setStorageMessage(currentHealth.status === "available" ? "" : currentHealth.message);
+    setLoading(false);
+  }, []);
+  const persistedIds = new Set(persisted.map((investigation) => investigation.id));
+  const demoInvestigations: Investigation[] = DASHBOARD_INVESTIGATIONS.filter((investigation) => !persistedIds.has(investigation.id));
+  const investigations = [...persisted, ...demoInvestigations];
+  const totalClaims = investigations.reduce(
     (acc, inv) => acc + inv.claims.length,
     0
   );
-  const criticalUnsupported = DASHBOARD_INVESTIGATIONS.reduce(
+  const criticalUnsupported = investigations.reduce(
     (acc, inv) =>
       acc +
       inv.claims.filter(
@@ -188,13 +207,15 @@ export default function InvestigationsPage() {
       ).length,
     0
   );
-  const requiresReview = DASHBOARD_INVESTIGATIONS.filter(
+  const requiresReview = investigations.filter(
     (inv) => inv.requiresHumanReview
   ).length;
 
   return (
     <AppShell title="Investigations">
       <div className="p-6">
+        {storageMessage && <p className="mb-4 rounded border border-[#FFC94D]/30 bg-[#3A2A0E] px-3 py-2 font-mono text-xs text-[#FFC94D]" role="status">{storageMessage}</p>}
+        {loading && <p className="mb-4 font-mono text-xs text-[#86ADC2]">Loading persisted investigations...</p>}
         {/* Header */}
         <div className="mb-6 flex items-center justify-between gap-4">
           <div>
@@ -202,7 +223,7 @@ export default function InvestigationsPage() {
               Investigations
             </h1>
             <p className="mt-0.5 text-sm text-[#86ADC2]">
-              {DASHBOARD_INVESTIGATIONS.length} investigations
+              {investigations.length} investigations
             </p>
           </div>
           <Link
@@ -219,7 +240,7 @@ export default function InvestigationsPage() {
           {[
             {
               label: "Total investigations",
-              value: DASHBOARD_INVESTIGATIONS.length,
+              value: investigations.length,
               color: "text-[#E9F3F8]",
             },
             {
@@ -266,8 +287,8 @@ export default function InvestigationsPage() {
           </div>
 
           {/* Rows */}
-          {DASHBOARD_INVESTIGATIONS.map((inv) => (
-            <InvestigationRow key={inv.id} inv={inv} />
+          {investigations.map((inv) => (
+            <InvestigationRow key={inv.id} inv={inv} demo={!persistedIds.has(inv.id)} />
           ))}
         </div>
       </div>

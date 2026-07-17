@@ -11,6 +11,7 @@ import {
   saveClaims,
   saveSelectedClaims,
 } from "@/lib/investigation-repository";
+import { continuationRoute, isClaimReviewEditable } from "@/lib/investigation-lifecycle";
 import type { Claim, ClaimCategory, Criticality, Investigation } from "@/lib/types";
 import {
   CheckSquare,
@@ -193,6 +194,20 @@ export function ClaimsClient({ id }: { id: string }) {
             </div>
           </div>
         </div>
+      </AppShell>
+    );
+  }
+
+  if (!isClaimReviewEditable(investigation.status)) {
+    const href = continuationRoute(id, investigation.status, !!investigation.report);
+    const completed = investigation.status === "completed" || investigation.status === "completed_with_limitations";
+    return (
+      <AppShell title="Review claims" investigation={investigation}>
+        <div className="mx-auto max-w-xl p-6"><div className="rounded border border-[#FFC94D]/30 bg-[#3A2A0E] p-4">
+          <h1 className="text-sm font-semibold text-[#E9F3F8]">Claim review is locked</h1>
+          <p className="mt-1 text-sm text-[#86ADC2]">{completed ? "This investigation is complete, so its report and claims are immutable." : "This investigation has moved beyond claim review."}</p>
+          <a href={href} className="mt-4 inline-flex rounded bg-[#FF6B1A] px-3 py-2 text-sm font-medium text-[#0B1E2E]">{completed ? "Open report" : "Continue investigation"}</a>
+        </div></div>
       </AppShell>
     );
   }

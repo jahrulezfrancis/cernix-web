@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { cn, formatDuration } from "@/lib/utils";
@@ -11,6 +11,7 @@ import {
   saveSimulationState,
 } from "@/lib/investigation-repository";
 import { buildMockReport } from "@/lib/mock-report-generator";
+import { canUseLiveControls, continuationRoute } from "@/lib/investigation-lifecycle";
 import type {
   Claim,
   ClaimStatus,
@@ -304,6 +305,8 @@ export function LiveClient({ id }: { id: string }) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const eventScrollRef = useRef<HTMLDivElement>(null);
+  const elapsedValueRef = useRef(0);
+  const runningValueRef = useRef(false);
 
   useEffect(() => {
     const loaded = getInvestigation(id);
@@ -312,16 +315,19 @@ export function LiveClient({ id }: { id: string }) {
       setStepIndex(loaded.simulationState.stepIndex);
       setElapsed(loaded.simulationState.elapsedSeconds);
       setVisibleEventIds(loaded.simulationState.visibleEventIds);
-      setRunning(false);
+      setRunning(loaded.status === "investigating" && loaded.simulationState.running);
     }
     const health = getStorageHealth();
     setStorageMessage(health.status === "available" ? "" : health.message);
     setLoading(false);
   }, [id]);
 
-  const selectedClaims = investigation?.claims.filter((claim) => claim.selected) ?? [];
-  const steps = buildSteps(selectedClaims);
-  const events = buildEvents(selectedClaims);
+  elapsedValueRef.current = elapsed;
+  runningValueRef.current = running;
+
+  const selectedClaims = useMemo(() => investigation?.claims.filter((claim) => claim.selected) ?? [], [investigation?.claims]);
+  const steps = useMemo(() => buildSteps(selectedClaims), [selectedClaims]);
+  const events = useMemo(() => buildEvents(selectedClaims), [selectedClaims]);
   const currentStep = steps[Math.min(stepIndex, steps.length - 1)] ?? steps[0];
   const visibleEvents = events.filter((event) => visibleEventIds.includes(event.id));
   const isComplete = stepIndex >= steps.length - 1;
@@ -365,13 +371,13 @@ export function LiveClient({ id }: { id: string }) {
       const completed = nextStep >= steps.length - 1;
       if (completed) {
         setRunning(false);
-        completeWithReport(nextStep, elapsed, nextEventIds);
+        completeWithReport(nextStep, elapsedValueRef.current, nextEventIds);
       } else {
-        persist(nextStep, elapsed, running, nextEventIds, false);
+        persist(nextStep, elapsedValueRef.current, runningValueRef.current, nextEventIds, false);
       }
       return nextStep;
     });
-  }, [completeWithReport, elapsed, events, persist, running, steps.length]);
+  }, [completeWithReport, events, persist, steps.length]);
 
   useEffect(() => {
     if (running && !isComplete) {
@@ -437,6 +443,21 @@ export function LiveClient({ id }: { id: string }) {
 
   if (!investigation) {
     return <StatePanel title="Investigation not found" message={`No persisted investigation exists for ${id}.`} />;
+  }
+
+  if (!canUseLiveControls(investigation.status)) {
+    const completed = investigation.status === "completed" || investigation.status === "completed_with_limitations";
+    const awaiting = investigation.status === "awaiting_claim_review" || investigation.status === "draft" || investigation.status === "extracting_claims";
+    const href = continuationRoute(id, investigation.status, !!investigation.report);
+    return (
+      <AppShell title="Live investigation" investigation={investigation}>
+        <div className="mx-auto max-w-xl p-6"><div className="rounded border border-[#FFC94D]/30 bg-[#3A2A0E] p-4">
+          <h1 className="text-sm font-semibold text-[#E9F3F8]">{completed ? "Investigation complete" : investigation.status === "failed" ? "Investigation failed" : "Live controls unavailable"}</h1>
+          <p className="mt-1 text-sm text-[#86ADC2]">{completed ? "The completed report is immutable." : investigation.status === "failed" ? "A failed investigation cannot restart implicitly." : awaiting ? "Review and approve claims before starting the investigation." : "The investigation is in a later workflow stage."}</p>
+          {(completed || awaiting) && <Link href={href} className="mt-4 inline-flex rounded bg-[#FF6B1A] px-3 py-2 text-sm font-medium text-[#0B1E2E]">{completed ? "Open report" : "Review claims"}</Link>}
+        </div></div>
+      </AppShell>
+    );
   }
 
   if (selectedClaims.length === 0) {
