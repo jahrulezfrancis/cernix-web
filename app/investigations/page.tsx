@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { DASHBOARD_INVESTIGATIONS } from "@/lib/mock-data";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
+import { dashboardRoute } from "@/lib/dashboard-routing";
 import { getStorageHealth, listInvestigations } from "@/lib/investigation-repository";
 import { CommitBadge } from "@/components/ui/commit-badge";
 import { formatDate, formatDuration } from "@/lib/utils";
@@ -13,7 +14,6 @@ import {
   GitBranch,
   Clock,
   AlertCircle,
-  RotateCcw,
   ChevronRight,
   CircleDot,
 } from "lucide-react";
@@ -77,13 +77,14 @@ function VerdictBar({ claims }: { claims: Investigation["claims"] }) {
   );
 }
 
-function InvestigationRow({ inv, demo = false }: { inv: Investigation; demo?: boolean }) {
+export function InvestigationRow({ inv, demo = false }: { inv: Investigation; demo?: boolean }) {
   const status = STATUS_CONFIG[inv.status];
   const submissionLabel = SUBMISSION_LABELS[inv.submission.type];
   const isCompleted = inv.status === "completed" || inv.status === "completed_with_limitations";
   const isFailed = inv.status === "failed";
   const isAwaitingReview = inv.status === "awaiting_claim_review";
-  const isInProgress = ["investigating", "challenged", "reinvestigating", "judging", "awaiting_review"].includes(inv.status);
+  const route = dashboardRoute(inv, demo);
+  const actionLabel = isCompleted ? "Report" : isAwaitingReview ? "Review claims" : "View live";
 
   return (
     <div className="group border-b border-[#1E4560] last:border-b-0">
@@ -138,41 +139,13 @@ function InvestigationRow({ inv, demo = false }: { inv: Investigation; demo?: bo
           {status.label}
         </span>
 
-        {/* Actions */}
         <div className="flex shrink-0 items-center gap-2">
-          {isFailed && (
-            <button
-              className="flex items-center gap-1 rounded-lg border border-[#F2796B]/30 bg-[#3A1414] px-2 py-1 font-mono text-[10px] text-[#F2796B] transition-colors hover:bg-[#F2796B]/20"
-              aria-label="Retry failed task"
-            >
-              <RotateCcw className="h-3 w-3" aria-hidden />
-              Retry
-            </button>
-          )}
-          {isAwaitingReview && (
-            <Link
-              href={`/investigations/${inv.id}/claims`}
-              className="flex items-center gap-1 rounded-lg border border-[#FFC94D]/30 bg-[#3A2A0E] px-2 py-1 font-mono text-[10px] text-[#FFC94D] transition-colors hover:bg-[#FFC94D]/20"
-            >
-              Review claims
+          {route ? (
+            <Link href={route} className="flex items-center gap-1 rounded-lg border border-[#1E4560] bg-[#123049] px-2 py-1 font-mono text-[10px] text-[#86ADC2] transition-colors hover:border-[#FF6B1A]/50 hover:text-[#E9F3F8]">
+              {actionLabel}<ChevronRight className="h-3 w-3" aria-hidden />
             </Link>
-          )}
-          {isInProgress && (
-            <Link
-              href={`/investigations/${inv.id}/live`}
-              className="flex items-center gap-1 rounded-lg border border-[#FF6B1A]/30 bg-[#FF6B1A]/10 px-2 py-1 font-mono text-[10px] text-[#FF6B1A] transition-colors hover:bg-[#FF6B1A]/20"
-            >
-              View live
-            </Link>
-          )}
-          {isCompleted && (
-            <Link
-              href={`/investigations/${inv.id}/report`}
-              className="flex items-center gap-1 rounded-lg border border-[#1E4560] bg-[#123049] px-2 py-1 font-mono text-[10px] text-[#86ADC2] transition-colors hover:border-[#FF6B1A]/50 hover:text-[#E9F3F8]"
-            >
-              Report
-              <ChevronRight className="h-3 w-3" aria-hidden />
-            </Link>
+          ) : (
+            <span className="rounded border border-[#1E4560] px-2 py-1 font-mono text-[10px] text-[#4F7590]">{demo ? "Demo only" : isFailed ? "No automatic retry" : "Unavailable"}</span>
           )}
         </div>
       </div>
@@ -193,23 +166,13 @@ export default function InvestigationsPage() {
   const persistedIds = new Set(persisted.map((investigation) => investigation.id));
   const demoInvestigations: Investigation[] = DASHBOARD_INVESTIGATIONS.filter((investigation) => !persistedIds.has(investigation.id));
   const investigations = [...persisted, ...demoInvestigations];
-  const totalClaims = investigations.reduce(
-    (acc, inv) => acc + inv.claims.length,
+  const metricInvestigations = persisted;
+  const totalClaims = metricInvestigations.reduce((total, investigation) => total + investigation.claims.length, 0);
+  const criticalUnsupported = metricInvestigations.reduce(
+    (total, investigation) => total + investigation.claims.filter((claim) => claim.criticality === "critical" && (claim.verdict === "unverified" || claim.verdict === "contradicted")).length,
     0
   );
-  const criticalUnsupported = investigations.reduce(
-    (acc, inv) =>
-      acc +
-      inv.claims.filter(
-        (c) =>
-          c.criticality === "critical" &&
-          (c.verdict === "unverified" || c.verdict === "contradicted")
-      ).length,
-    0
-  );
-  const requiresReview = investigations.filter(
-    (inv) => inv.requiresHumanReview
-  ).length;
+  const requiresReview = metricInvestigations.filter((investigation) => investigation.requiresHumanReview).length;
 
   return (
     <AppShell title="Investigations">
@@ -223,7 +186,7 @@ export default function InvestigationsPage() {
               Investigations
             </h1>
             <p className="mt-0.5 text-sm text-[#86ADC2]">
-              {investigations.length} investigations
+              {persisted.length} saved investigations · {demoInvestigations.length} demos
             </p>
           </div>
           <Link
@@ -240,7 +203,7 @@ export default function InvestigationsPage() {
           {[
             {
               label: "Total investigations",
-              value: investigations.length,
+              value: metricInvestigations.length,
               color: "text-[#E9F3F8]",
             },
             {
