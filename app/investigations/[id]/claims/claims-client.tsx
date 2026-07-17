@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { cn } from "@/lib/utils";
 import {
+  beginInvestigation as persistInvestigationStart,
   getInvestigation,
   getStorageHealth,
   saveClaims,
@@ -151,7 +152,14 @@ export function ClaimsClient({ id }: { id: string }) {
   }
 
   async function beginInvestigation() {
+    if (selectedCount === 0) return;
     setBeginning(true);
+    const next = persistInvestigationStart(id);
+    if (!next) {
+      setBeginning(false);
+      return;
+    }
+    setInvestigation(next);
     await new Promise((resolve) => setTimeout(resolve, 500));
     router.push(`/investigations/${id}/live`);
   }

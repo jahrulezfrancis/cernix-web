@@ -241,6 +241,16 @@ export function saveSelectedClaims(id: string, claims: Claim[]) {
   return saveClaims(id, claims);
 }
 
+export function beginInvestigation(id: string) {
+  return updateInvestigation(id, (investigation) => ({
+    ...investigation,
+    status:
+      investigation.status === "awaiting_claim_review"
+        ? "investigating"
+        : investigation.status,
+  }));
+}
+
 export function saveSimulationState(
   id: string,
   simulationState: InvestigationSimulationState
