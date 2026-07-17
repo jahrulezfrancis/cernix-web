@@ -11,6 +11,7 @@ import {
   saveSimulationState,
 } from "@/lib/investigation-repository";
 import { buildMockReport } from "@/lib/mock-report-generator";
+import { advanceSimulation, pauseSimulation, resumeSimulation } from "@/lib/simulation-state";
 import { canUseLiveControls, continuationRoute } from "@/lib/investigation-lifecycle";
 import type {
   Claim,
@@ -364,7 +365,8 @@ export function LiveClient({ id }: { id: string }) {
 
   const advance = useCallback(() => {
     setStepIndex((previous) => {
-      const nextStep = Math.min(previous + 1, steps.length - 1);
+      const advancedState = advanceSimulation(stateFor(previous, elapsedValueRef.current, runningValueRef.current, visibleEventIds, false), true);
+      const nextStep = Math.min(advancedState.stepIndex, steps.length - 1);
       const stepTime = (nextStep / Math.max(steps.length - 1, 1)) * Math.max(events.length * 8, 24);
       const nextEventIds = events.filter((event) => event.timestamp <= stepTime).map((event) => event.id);
       setVisibleEventIds(nextEventIds);
@@ -408,15 +410,16 @@ export function LiveClient({ id }: { id: string }) {
       eventScrollRef.current.scrollTop = eventScrollRef.current.scrollHeight;
     }
   }, [visibleEvents]);
-
   function startSim() {
-    setRunning(true);
-    persist(stepIndex, elapsed, true, visibleEventIds, isComplete);
+    const resumed = resumeSimulation(stateFor(stepIndex, elapsed, false, visibleEventIds, isComplete));
+    setRunning(resumed.running);
+    persist(resumed.stepIndex, resumed.elapsedSeconds, resumed.running, resumed.visibleEventIds, resumed.completed);
   }
 
   function pauseSim() {
+    const paused = pauseSimulation(stateFor(stepIndex, elapsed, true, visibleEventIds, isComplete));
     setRunning(false);
-    persist(stepIndex, elapsed, false, visibleEventIds, isComplete);
+    persist(paused.stepIndex, paused.elapsedSeconds, paused.running, paused.visibleEventIds, paused.completed);
   }
 
   function completeAll() {
@@ -454,7 +457,7 @@ export function LiveClient({ id }: { id: string }) {
         <div className="mx-auto max-w-xl p-6"><div className="rounded border border-[#FFC94D]/30 bg-[#3A2A0E] p-4">
           <h1 className="text-sm font-semibold text-[#E9F3F8]">{completed ? "Investigation complete" : investigation.status === "failed" ? "Investigation failed" : "Live controls unavailable"}</h1>
           <p className="mt-1 text-sm text-[#86ADC2]">{completed ? "The completed report is immutable." : investigation.status === "failed" ? "A failed investigation cannot restart implicitly." : awaiting ? "Review and approve claims before starting the investigation." : "The investigation is in a later workflow stage."}</p>
-          {(completed || awaiting) && <Link href={href} className="mt-4 inline-flex rounded bg-[#FF6B1A] px-3 py-2 text-sm font-medium text-[#0B1E2E]">{completed ? "Open report" : "Review claims"}</Link>}
+          <Link href={completed || awaiting ? href : "/investigations"} className="mt-4 inline-flex rounded bg-[#FF6B1A] px-3 py-2 text-sm font-medium text-[#0B1E2E]">{completed ? "Open report" : awaiting ? "Review claims" : investigation.status === "failed" ? "Back to investigations" : "View investigation list"}</Link>
         </div></div>
       </AppShell>
     );
