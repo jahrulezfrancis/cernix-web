@@ -7,6 +7,9 @@ import {
   CreateInvestigationRequestSchema,
   IdempotencyKeySchema,
   InvestigationIdSchema,
+  PUBLIC_ERROR_DEFINITIONS,
+  PUBLIC_VALIDATION_ISSUE_MESSAGES,
+  PublicSafeErrorEnvelopeSchema,
   StartInvestigationResponseSchema,
   TERMINAL_BACKEND_STATUSES,
   canTransitionBackendLifecycle,
@@ -105,5 +108,82 @@ describe("investigation API contracts", () => {
     for (const status of TERMINAL_BACKEND_STATUSES) {
       expect(BACKEND_LIFECYCLE_TRANSITIONS[status]).toEqual([]);
     }
+  });
+
+  it("enforces the complete authoritative transition matrix", () => {
+    const statuses = [
+      "awaiting_claim_review",
+      "snapshotting",
+      "planning",
+      "investigating",
+      "challenging",
+      "reinvestigating",
+      "judging",
+      "completed",
+      "completed_with_limitations",
+      "failed",
+    ] as const;
+    const expectedForwardTransitions = {
+      awaiting_claim_review: ["snapshotting", "failed"],
+      snapshotting: ["planning", "failed"],
+      planning: ["investigating", "failed"],
+      investigating: ["challenging", "failed"],
+      challenging: ["judging", "reinvestigating", "failed"],
+      reinvestigating: ["judging", "failed"],
+      judging: ["completed", "completed_with_limitations", "failed"],
+      completed: [],
+      completed_with_limitations: [],
+      failed: [],
+    } as const;
+
+    for (const from of statuses) {
+      for (const to of statuses) {
+        const expected = from === to ||
+          (expectedForwardTransitions[from] as readonly string[]).includes(to);
+        expect(
+          canTransitionBackendLifecycle(from, to),
+          `expected ${from} -> ${to} to be ${String(expected)}`
+        ).toBe(expected);
+      }
+    }
+  });
+
+  it("fails closed for unknown lifecycle states and rejects submitted", () => {
+    expect(BackendLifecycleStatusSchema.safeParse("submitted").success).toBe(false);
+    expect(() => canTransitionBackendLifecycle(
+      "unknown" as never,
+      "snapshotting"
+    )).toThrow();
+  });
+
+  it("rejects non-allowlisted public error messages and issue structures", () => {
+    expect(PublicSafeErrorEnvelopeSchema.safeParse({
+      error: {
+        code: "internal_error",
+        message: "database password",
+      },
+    }).success).toBe(false);
+    expect(PublicSafeErrorEnvelopeSchema.safeParse({
+      error: {
+        code: "invalid_claim",
+        message: PUBLIC_ERROR_DEFINITIONS.invalid_claim.publicMessage,
+        issues: [{
+          field: "claim[secret]",
+          code: "too_small",
+          message: PUBLIC_VALIDATION_ISSUE_MESSAGES.too_small,
+        }],
+      },
+    }).success).toBe(false);
+    expect(PublicSafeErrorEnvelopeSchema.safeParse({
+      error: {
+        code: "invalid_claim",
+        message: PUBLIC_ERROR_DEFINITIONS.invalid_claim.publicMessage,
+        issues: [{
+          field: "claim.statement",
+          code: "too_small",
+          message: "Rejected secret value.",
+        }],
+      },
+    }).success).toBe(false);
   });
 });

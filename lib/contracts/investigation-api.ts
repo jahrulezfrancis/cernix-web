@@ -137,13 +137,65 @@ export const PublicErrorCodeSchema = z.enum([
 ]);
 export type PublicErrorCode = z.infer<typeof PublicErrorCodeSchema>;
 
+type PublicErrorDefinition = Readonly<{
+  httpStatus: number;
+  publicMessage: string;
+}>;
+
+export const PUBLIC_ERROR_DEFINITIONS = Object.freeze({
+  malformed_input: Object.freeze({ httpStatus: 400, publicMessage: "The request is malformed." }),
+  invalid_repository_url: Object.freeze({ httpStatus: 422, publicMessage: "Enter a valid GitHub repository URL." }),
+  invalid_claim: Object.freeze({ httpStatus: 422, publicMessage: "The claim is invalid." }),
+  invalid_idempotency_key: Object.freeze({ httpStatus: 422, publicMessage: "Enter a valid idempotency key." }),
+  invalid_lifecycle_transition: Object.freeze({ httpStatus: 409, publicMessage: "The requested lifecycle transition is not allowed." }),
+  not_found: Object.freeze({ httpStatus: 404, publicMessage: "The requested resource was not found." }),
+  conflict: Object.freeze({ httpStatus: 409, publicMessage: "The request conflicts with the current resource state." }),
+  rate_limited: Object.freeze({ httpStatus: 429, publicMessage: "Too many requests. Try again later." }),
+  dependency_unavailable: Object.freeze({ httpStatus: 503, publicMessage: "A required service is temporarily unavailable." }),
+  internal_error: Object.freeze({ httpStatus: 500, publicMessage: "An unexpected error occurred." }),
+} as const satisfies Readonly<Record<PublicErrorCode, PublicErrorDefinition>>);
+
+export const PUBLIC_VALIDATION_ISSUE_MESSAGES = Object.freeze({
+  invalid_type: "Enter a value of the expected type.",
+  too_small: "Enter a value that meets the minimum requirement.",
+  too_big: "Enter a value that meets the maximum requirement.",
+  invalid_format: "Enter a value in the expected format.",
+  invalid_value: "Enter one of the allowed values.",
+  unknown_field: "Remove fields that are not supported.",
+  invalid_input: "Enter a valid value.",
+} as const);
+
+export const PublicValidationIssueCodeSchema = z.enum([
+  "invalid_type",
+  "too_small",
+  "too_big",
+  "invalid_format",
+  "invalid_value",
+  "unknown_field",
+  "invalid_input",
+]);
+export type PublicValidationIssueCode = z.infer<
+  typeof PublicValidationIssueCodeSchema
+>;
+
+const PUBLIC_FIELD_PATH = /^[A-Za-z][A-Za-z0-9_]{0,63}(?:\.(?:[A-Za-z][A-Za-z0-9_]{0,63}|\d{1,4})){0,7}$/;
+
 export const PublicValidationIssueSchema = z
   .object({
-    field: z.string().min(1),
-    code: z.string().min(1),
-    message: z.string().min(1),
+    field: z.string().min(1).max(255).regex(PUBLIC_FIELD_PATH),
+    code: PublicValidationIssueCodeSchema,
+    message: z.string().min(1).max(100),
   })
-  .strict();
+  .strict()
+  .superRefine((issue, context) => {
+    if (issue.message !== PUBLIC_VALIDATION_ISSUE_MESSAGES[issue.code]) {
+      context.addIssue({
+        code: "custom",
+        path: ["message"],
+        message: "Validation issue messages must match their public code.",
+      });
+    }
+  });
 export type PublicValidationIssue = z.infer<typeof PublicValidationIssueSchema>;
 
 export const PublicSafeErrorEnvelopeSchema = z
@@ -152,9 +204,18 @@ export const PublicSafeErrorEnvelopeSchema = z
       .object({
         code: PublicErrorCodeSchema,
         message: z.string().min(1),
-        issues: z.array(PublicValidationIssueSchema).optional(),
+        issues: z.array(PublicValidationIssueSchema).max(50).optional(),
       })
-      .strict(),
+      .strict()
+      .superRefine((error, context) => {
+        if (error.message !== PUBLIC_ERROR_DEFINITIONS[error.code].publicMessage) {
+          context.addIssue({
+            code: "custom",
+            path: ["message"],
+            message: "Public error messages must match their public code.",
+          });
+        }
+      }),
   })
   .strict();
 export type PublicSafeErrorEnvelope = z.infer<

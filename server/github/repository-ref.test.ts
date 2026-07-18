@@ -78,4 +78,61 @@ describe("parseGitHubRepositoryRef", () => {
       });
     }
   });
+
+  it.each([
+    "https://github.com./owner/repo",
+    "https://github.com:444/owner/repo",
+    "https://www.github.com/owner/repo",
+    "https://raw.github.com/owner/repo",
+    "https://github.com.evil.test/owner/repo",
+    "https://xn--gthub-cta.com/owner/repo",
+    "https://githսb.com/owner/repo",
+    "https://github.com\r/owner/repo",
+    "https://github.com\n/owner/repo",
+    "https://github.com\t/owner/repo",
+    "https://github.com\r\n/owner/repo",
+    "https://github.com/owner\t/repo",
+    "https://github.com%3F@evil.test/owner/repo",
+    "https://github.com%23@evil.test/owner/repo",
+    "https://github.com%40evil.test/owner/repo",
+    "https://user%40name@github.com/owner/repo",
+    "https://github.com@@evil.test/owner/repo",
+    "https://github.com:443@evil.test/owner/repo",
+    "https://github.com/owner/repo%25252fextra",
+    "https://github.com/owner/repo%2525252Fextra",
+    "https://github.com/owner/repo%25255cextra",
+    "https://github.com/owner/repo%2525255Cextra",
+    "https://github.com/owner/%25252e%25252e",
+    "https://github.com/owner/%2525252E%2525252E",
+    "https://github.com/owner/repo//",
+    "https://github.com/owner//repo",
+    "https://github.com//owner/repo",
+    "https://github.com/owner%2f/repo\\extra",
+    "https://github.com/owner\\%252frepo",
+  ])("rejects additional raw parser hazards %j", (input) => {
+    expect(() => parseGitHubRepositoryRef(input)).toThrow(ApplicationError);
+  });
+
+  it.each([
+    ["https://github.com/owner/repo%3Ftab", "repo?tab", "https://github.com/owner/repo%3Ftab"],
+    ["https://github.com/owner/repo%23anchor", "repo#anchor", "https://github.com/owner/repo%23anchor"],
+    ["https://github.com/owner/repo%40scope", "repo@scope", "https://github.com/owner/repo%40scope"],
+  ])(
+    "keeps encoded path delimiters confined to one canonical segment for %s",
+    (input, repo, canonicalUrl) => {
+      expect(parseGitHubRepositoryRef(input)).toEqual({
+        owner: "owner",
+        repo,
+        canonicalUrl,
+      });
+    }
+  );
+
+  it("removes exactly one terminal .git suffix", () => {
+    expect(parseGitHubRepositoryRef("https://github.com/Owner/Repo.git.git")).toEqual({
+      owner: "Owner",
+      repo: "Repo.git",
+      canonicalUrl: "https://github.com/Owner/Repo.git",
+    });
+  });
 });

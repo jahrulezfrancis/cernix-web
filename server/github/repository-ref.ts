@@ -1,7 +1,6 @@
 import { ApplicationError } from "@/server/errors";
 
 const GITHUB_ORIGIN = "https://github.com";
-const INVALID_MESSAGE = "Enter a valid GitHub repository URL.";
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
 const WHITESPACE = /\s/u;
 const MALFORMED_PERCENT_ESCAPE = /%(?![0-9a-f]{2})/i;
@@ -14,12 +13,10 @@ export type GitHubRepositoryRef = {
 
 function invalidRepositoryUrl(cause?: unknown): ApplicationError {
   return new ApplicationError("invalid_repository_url", {
-    message: INVALID_MESSAGE,
     issues: [
       {
         field: "repositoryUrl",
-        code: "invalid_repository_url",
-        message: INVALID_MESSAGE,
+        code: "invalid_format",
       },
     ],
     cause,
