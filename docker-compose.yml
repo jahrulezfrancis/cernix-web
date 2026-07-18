@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: cernix_demo
+      POSTGRES_PASSWORD: cernix_demo
+      POSTGRES_DB: cernix
+    ports:
+      - "127.0.0.1:54329:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cernix_demo -d cernix"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - cernix_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  cernix_postgres_data:
