@@ -46,7 +46,8 @@ export function ReportPageClient({ id }: { id: string }) {
     );
   }
 
-  if (!investigation.report) {
+  const completed = investigation.status === "completed" || investigation.status === "completed_with_limitations";
+  if (!completed || !investigation.report) {
     return (
       <AppShell title="Evidence report" investigation={investigation}>
         <StateCard

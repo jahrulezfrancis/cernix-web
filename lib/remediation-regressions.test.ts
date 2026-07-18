@@ -64,6 +64,81 @@ describe("merge-blocker regressions", () => {
     expect(getStorageHealth().status).toBe("malformed");
   });
 
+  it("does not expose stale memory records after durable storage becomes malformed", () => {
+    const investigation = createInvestigation(input);
+    expect(getInvestigation(investigation.id)).not.toBeNull();
+    localStorage.setItem(__storageKeyForTests, "{");
+    expect(getInvestigation(investigation.id)).toBeNull();
+    expect(listInvestigations()).toEqual([]);
+    expect(getStorageHealth().status).toBe("malformed");
+  });
+
+  it("rejects reports that do not match investigation identity or selected claims", () => {
+    const investigation = createInvestigation(input);
+    beginInvestigation(investigation.id);
+    const current = getInvestigation(investigation.id)!;
+    const report = buildMockReport(current, 12);
+    const wrongProject = { ...report, projectName: "another-project" };
+    expect(completeInvestigation(investigation.id, wrongProject, completedState(report.investigationDate))?.status).toBe("investigating");
+    const changedClaim = { ...report, claims: report.claims.map((claim, index) => index === 0 ? { ...claim, normalizedInterpretation: "Different claim" } : claim) };
+    expect(completeInvestigation(investigation.id, changedClaim, completedState(report.investigationDate))?.status).toBe("investigating");
+  });
+
+  it("rejects persisted reports on non-terminal investigations", () => {
+    const investigation = createInvestigation(input);
+    beginInvestigation(investigation.id);
+    const report = buildMockReport(getInvestigation(investigation.id)!, 12);
+    const envelope = JSON.parse(localStorage.getItem(__storageKeyForTests)!);
+    envelope.investigations[investigation.id].report = report;
+    localStorage.setItem(__storageKeyForTests, JSON.stringify(envelope));
+    __resetRepositoryForTests();
+    expect(getInvestigation(investigation.id)).toBeNull();
+    expect(getStorageHealth().status).toBe("malformed");
+  });
+
+  it("preserves unselected investigation claims after completion", () => {
+    const investigation = createInvestigation(input);
+    beginInvestigation(investigation.id);
+    const current = getInvestigation(investigation.id)!;
+    const report = buildMockReport(current, 12);
+    const completed = completeInvestigation(investigation.id, report, completedState(report.investigationDate))!;
+    expect(completed.claims).toHaveLength(current.claims.length);
+    expect(completed.report?.claims).toHaveLength(current.claims.filter((claim) => claim.selected).length);
+  });
+
+  it("rejects invalid report enums and aggregate counts", () => {
+    const investigation = createInvestigation(input);
+    beginInvestigation(investigation.id);
+    const current = getInvestigation(investigation.id)!;
+    const report = buildMockReport(current, 12);
+    const wrongCount = { ...report, verified: report.verified + 1 };
+    expect(completeInvestigation(investigation.id, wrongCount, completedState(report.investigationDate))?.status).toBe("investigating");
+    const claimId = report.claims[0].id;
+    const invalidVerdict = {
+      ...report,
+      judgments: { ...report.judgments, [claimId]: { ...report.judgments[claimId], verdict: "invalid" } },
+    };
+    expect(completeInvestigation(investigation.id, invalidVerdict as typeof report, completedState(report.investigationDate))?.status).toBe("investigating");
+  });
+
+  it("isolates malformed records and preserves the durable payload during quarantine", () => {
+    const first = createInvestigation(input);
+    const second = createInvestigation(input);
+    const envelope = JSON.parse(localStorage.getItem(__storageKeyForTests)!);
+    envelope.investigations[second.id].submission.projectId = "foreign-project";
+    localStorage.setItem(__storageKeyForTests, JSON.stringify(envelope));
+    const quarantinedPayload = localStorage.getItem(__storageKeyForTests);
+    __resetRepositoryForTests();
+
+    expect(listInvestigations().map((investigation) => investigation.id)).toEqual([first.id]);
+    expect(getInvestigation(second.id)).toBeNull();
+    expect(getStorageHealth().status).toBe("malformed");
+
+    const sessionOnly = createInvestigation(input);
+    expect(getInvestigation(sessionOnly.id)).not.toBeNull();
+    expect(localStorage.getItem(__storageKeyForTests)).toBe(quarantinedPayload);
+  });
+
   it("never gives demo or failed dashboard rows a navigation target", () => {
     const investigation = createInvestigation(input);
     expect(dashboardRoute(investigation, true)).toBeNull();
