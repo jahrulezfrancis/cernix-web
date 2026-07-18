@@ -7,6 +7,9 @@
     "\\"
   ],
   "license": "ISC",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "author": "",
   "type": "module",
   "main": "index.js",
