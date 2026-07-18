@@ -17,6 +17,20 @@ jobs:
   quality:
     name: Quality gate
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: cernix_ci
+          POSTGRES_PASSWORD: cernix_ci
+          POSTGRES_DB: cernix_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cernix_ci -d cernix_ci"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -35,6 +49,16 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Migrate database
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: postgresql://cernix_ci:cernix_ci@127.0.0.1:5432/cernix_ci
+
+      - name: Integration test
+        run: npm run test:integration
+        env:
+          DATABASE_URL: postgresql://cernix_ci:cernix_ci@127.0.0.1:5432/cernix_ci
 
       - name: Build
         run: npm run build
