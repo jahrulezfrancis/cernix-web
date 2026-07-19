@@ -136,5 +136,8 @@ describe.sequential("durable evidence job orchestration", () => {
     expect(claimed).toMatchObject({ kind: "reconciled", status: "succeeded" });
     expect((await investigations.getInvestigation(investigation.id)).status).toBe("challenging");
     expect((await evidenceJobs.getJob(evidenceJob.id))!.status).toBe("succeeded");
+    const skepticJob = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", investigation.id)
+      .where("kind", "=", "investigation_skeptic").executeTakeFirst();
+    expect(skepticJob?.status).toBe("queued");
   });
 });
