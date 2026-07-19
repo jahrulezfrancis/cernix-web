@@ -4,11 +4,11 @@ services:
     environment:
       POSTGRES_USER: cernix_demo
       POSTGRES_PASSWORD: cernix_demo
-      POSTGRES_DB: cernix
+      POSTGRES_DB: cernix_test
     ports:
       - "127.0.0.1:54329:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cernix_demo -d cernix"]
+      test: ["CMD-SHELL", "pg_isready -U cernix_demo -d cernix_test"]
       interval: 2s
       timeout: 3s
       retries: 20

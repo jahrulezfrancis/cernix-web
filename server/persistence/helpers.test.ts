@@ -12,9 +12,11 @@ describe("persistence helpers", () => {
   });
   it("parses precision-safe cursors and bounded limits", () => {
     expect(parseEventCursor("9007199254740993")).toBe("9007199254740993");
+    expect(parseEventCursor("9223372036854775807")).toBe("9223372036854775807");
     expect(boundEventLimit(1)).toBe(1);
     expect(boundEventLimit(100)).toBe(100);
     expect(() => parseEventCursor("-1")).toThrow(ApplicationError);
+    expect(() => parseEventCursor("9223372036854775808")).toThrow(ApplicationError);
     expect(() => boundEventLimit(101)).toThrow(ApplicationError);
   });
   it("accepts only safe failure classifications", () => {

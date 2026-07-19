@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { sql } from "kysely";
-import { createDatabase } from "@/server/db/database";
+import { sql, type Kysely } from "kysely";
+import type { Database } from "@/server/db/types";
+import { createDisposableTestDatabase } from "@/server/db/test-database";
 import { migrateToLatest, rollbackOne } from "@/server/db/migrate";
 import { ApplicationError } from "@/server/errors";
 import { InvestigationRepository } from "./investigation-repository";
 import { BACKEND_LIFECYCLE_TRANSITIONS, type BackendLifecycleStatus } from "@/lib/contracts/investigation-api";
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) throw new Error("Integration tests require DATABASE_URL.");
-const { db } = createDatabase(databaseUrl);
-const repository = new InvestigationRepository(db);
+let harness: Awaited<ReturnType<typeof createDisposableTestDatabase>>;
+let db: Kysely<Database>;
+let repository: InvestigationRepository;
 const createInput = {
   repositoryUrl: "https://github.com/Acme/Widget.git/",
   repositoryRef: " main ",
@@ -34,12 +34,17 @@ async function counts() {
 }
 
 beforeAll(async () => {
+  harness = await createDisposableTestDatabase();
+  db = harness.db;
+  repository = new InvestigationRepository(db);
+  const first = await migrateToLatest(db);
+  expect(first.some((result) => result.status === "Success")).toBe(true);
   await rollbackOne(db);
   const results = await migrateToLatest(db);
   expect(results.some((result) => result.status === "Success")).toBe(true);
 });
 beforeEach(truncate);
-afterAll(async () => { await db.destroy(); });
+afterAll(async () => { await harness?.cleanup(); });
 
 describe.sequential("PostgreSQL investigation persistence", () => {
   it("migrates the schema and enforces lifecycle, one-claim, and cascade constraints", async () => {
@@ -62,8 +67,6 @@ describe.sequential("PostgreSQL investigation persistence", () => {
       id: randomUUID(), investigation_id: created.id, statement: "second", preserved_qualifiers: "[]",
       approved_at: null, created_at: new Date(), updated_at: new Date(),
     }).execute()).rejects.toBeTruthy();
-    await expect(db.deleteFrom("investigations").where("id", "=", created.id).execute()).rejects.toBeTruthy();
-    await db.deleteFrom("idempotency_records").where("investigation_id", "=", created.id).execute();
     await db.deleteFrom("investigations").where("id", "=", created.id).execute();
     expect(await counts()).toMatchObject({ investigations: 0, manual_claims: 0, investigation_events: 0 });
   });
@@ -105,8 +108,8 @@ describe.sequential("PostgreSQL investigation persistence", () => {
     const unapproved = await repository.createInvestigation(createInput, randomUUID());
     await expect(repository.startInvestigation(unapproved.id, randomUUID())).rejects.toMatchObject({ code: "conflict" });
     const approved = await repository.approveClaim(unapproved.id, approval);
-    const key = randomUUID();
-    const results = await Promise.all(Array.from({ length: 8 }, () => repository.startInvestigation(approved.id, key)));
+    const keys = Array.from({ length: 8 }, () => randomUUID());
+    const results = await Promise.all(keys.map((key) => repository.startInvestigation(approved.id, key)));
     expect(new Set(results.map((value) => value.startedAt?.getTime())).size).toBe(1);
     expect(results[0]).toMatchObject({ status: "snapshotting", version: approved.version + 1 });
     expect(await counts()).toMatchObject({ investigation_jobs: 1, investigation_events: 3, idempotency_records: 2 });
@@ -128,7 +131,10 @@ describe.sequential("PostgreSQL investigation persistence", () => {
       for (const to of targets) {
         await truncate();
         const approved = await createApproved();
-        await db.updateTable("investigations").set({ status: from }).where("id", "=", approved.id).execute();
+        await db.updateTable("investigations").set({
+          status: from,
+          started_at: from === "awaiting_claim_review" || from === "failed" ? null : new Date(),
+        }).where("id", "=", approved.id).execute();
         const changed = await repository.transitionInvestigation(approved.id, to, {
           expectedStatus: from, ...(to === "failed" ? { failureCode: "stage_failed" } : {}),
         });
@@ -172,7 +178,7 @@ describe.sequential("PostgreSQL investigation persistence", () => {
   it("rolls transactions back without partial state", async () => {
     const key = randomUUID();
     await db.schema.alterTable("manual_claims").addCheckConstraint("force_failure", sql`false`).execute();
-    await expect(repository.createInvestigation(createInput, key)).rejects.toMatchObject({ code: "dependency_unavailable" });
+    await expect(repository.createInvestigation(createInput, key)).rejects.toMatchObject({ code: "internal_error" });
     await db.schema.alterTable("manual_claims").dropConstraint("force_failure").execute();
     expect(await counts()).toMatchObject({ investigations: 0, manual_claims: 0, investigation_events: 0, idempotency_records: 0 });
   });

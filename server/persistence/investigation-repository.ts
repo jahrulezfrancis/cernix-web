@@ -7,11 +7,12 @@ import {
 import { ApplicationError } from "@/server/errors";
 import { parseGitHubRepositoryRef } from "@/server/github/repository-ref";
 import type { Database } from "@/server/db/types";
+import { classifyDatabaseError } from "@/server/db/errors";
+import { PublicInvestigationEventSchema, type PublicInvestigationEvent } from "./events";
 import { boundEventLimit, hashCreateInput, hashStartInput, parseEventCursor, safeFailureCode } from "./helpers";
 
 type Db = Kysely<Database> | Transaction<Database>;
 type Clock = () => Date;
-type Payload = Record<string, string | number | boolean | null>;
 export type InvestigationReadModel = {
   id: string; status: BackendLifecycleStatus; repositoryOwner: string; repositoryName: string;
   repositoryCanonicalUrl: string; requestedRef: string | null; version: number;
@@ -20,13 +21,13 @@ export type InvestigationReadModel = {
 };
 
 function domainError(error: unknown): never {
-  if (error instanceof ApplicationError) throw error;
-  throw new ApplicationError("dependency_unavailable", { cause: error });
+  throw classifyDatabaseError(error);
 }
 async function lockKey(tx: Transaction<Database>, value: string) {
   await sql`select pg_advisory_xact_lock(hashtextextended(${value}, 0))`.execute(tx);
 }
-async function appendEvent(tx: Transaction<Database>, id: string, type: string, stage: BackendLifecycleStatus, payload: Payload, now: Date) {
+async function appendEvent(tx: Transaction<Database>, id: string, rawEvent: PublicInvestigationEvent, now: Date) {
+  const { type, stage, payload } = PublicInvestigationEventSchema.parse(rawEvent);
   await tx.insertInto("investigation_events").values({
     investigation_id: id, type, stage, public_payload: JSON.stringify(payload), created_at: now,
   }).execute();
@@ -83,7 +84,7 @@ export class InvestigationRepository {
           id: randomUUID(), investigation_id: id, statement: input.claim.statement,
           preserved_qualifiers: "[]", approved_at: null, created_at: now, updated_at: now,
         }).execute();
-        await appendEvent(tx, id, "investigation_created", "awaiting_claim_review", { claimCount: 1 }, now);
+        await appendEvent(tx, id, { type: "investigation_created", stage: "awaiting_claim_review", payload: { claimCount: 1 } }, now);
         await tx.insertInto("idempotency_records").values({
           scope: "create", idempotency_key: key, request_hash_sha256: hash,
           investigation_id: id, result_kind: "investigation_created", created_at: now,
@@ -109,8 +110,10 @@ export class InvestigationRepository {
           approved_at: now, updated_at: now,
         }).where("investigation_id", "=", id).execute();
         await tx.updateTable("investigations").set({ version: sql`version + 1`, updated_at: now }).where("id", "=", id).execute();
-        await appendEvent(tx, id, claim.approved_at ? "claim_edited" : "claim_approved",
-          "awaiting_claim_review", { qualifierCount: input.preservedQualifiers.length }, now);
+        await appendEvent(tx, id, {
+          type: claim.approved_at ? "claim_edited" : "claim_approved",
+          stage: "awaiting_claim_review", payload: { qualifierCount: input.preservedQualifiers.length },
+        }, now);
         return mapInvestigation(tx, id);
       });
     } catch (error) { return domainError(error); }
@@ -130,6 +133,7 @@ export class InvestigationRepository {
         }
         const investigation = await lockedInvestigation(tx, id);
         if (investigation.status === "failed") throw new ApplicationError("invalid_lifecycle_transition", {});
+        if (investigation.status !== "awaiting_claim_review") return mapInvestigation(tx, id);
         if (investigation.status === "awaiting_claim_review") {
           const claim = await tx.selectFrom("manual_claims").select("approved_at").where("investigation_id", "=", id).executeTakeFirstOrThrow();
           if (!claim.approved_at) throw new ApplicationError("conflict", {});
@@ -141,7 +145,9 @@ export class InvestigationRepository {
             id: randomUUID(), investigation_id: id, kind: "repository_snapshot", status: "queued",
             available_at: now, lease_owner: null, lease_expires_at: null, created_at: now, updated_at: now,
           }).execute();
-          await appendEvent(tx, id, "investigation_started", "snapshotting", { jobKind: "repository_snapshot" }, now);
+          await appendEvent(tx, id, {
+            type: "investigation_started", stage: "snapshotting", payload: { jobKind: "repository_snapshot" },
+          }, now);
         }
         await tx.insertInto("idempotency_records").values({
           scope, idempotency_key: key, request_hash_sha256: hash, investigation_id: id,
@@ -168,9 +174,12 @@ export class InvestigationRepository {
         const now = this.clock(), completed = to === "completed" || to === "completed_with_limitations";
         await tx.updateTable("investigations").set({
           status: to, version: sql`version + 1`, updated_at: now,
+          started_at: to === "failed" ? current.started_at : current.started_at ?? now,
           completed_at: completed ? now : current.completed_at, failure_code: to === "failed" ? failureCode : null,
         }).where("id", "=", id).execute();
-        await appendEvent(tx, id, "lifecycle_transitioned", to, { from: current.status, to }, now);
+        await appendEvent(tx, id, {
+          type: "lifecycle_transitioned", stage: to, payload: { from: current.status, to },
+        }, now);
         return mapInvestigation(tx, id);
       });
     } catch (error) { return domainError(error); }

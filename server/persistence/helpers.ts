@@ -15,6 +15,7 @@ export function hashStartInput(investigationId: string) {
 export function parseEventCursor(value: string | undefined): string {
   if (value === undefined) return "0";
   if (!/^(0|[1-9]\d{0,18})$/.test(value)) throw new ApplicationError("malformed_input", {});
+  if (BigInt(value) > 9223372036854775807n) throw new ApplicationError("malformed_input", {});
   return value;
 }
 export function boundEventLimit(value: number): number {
