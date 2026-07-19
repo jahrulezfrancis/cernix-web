@@ -4,21 +4,58 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { ReportClient } from "./report-client";
-import { getInvestigation, getStorageHealth } from "@/lib/investigation-repository";
-import type { Investigation } from "@/lib/types";
+import {
+  ApiRequestError,
+  getInvestigation,
+  getInvestigationReport,
+  isBackendInvestigationId,
+} from "@/lib/api/investigation-client";
+import { investigationResponseToUi, judgeArtifactToReport } from "@/lib/api/backend-investigation-adapter";
+import { validateJudgeArtifact } from "@/lib/contracts/judgment-report";
+import { getInvestigation as getLegacyInvestigation, getStorageHealth } from "@/lib/investigation-repository";
+import type { Investigation, Report } from "@/lib/types";
 import { AlertTriangle, FileText, Loader2 } from "lucide-react";
 
 export function ReportPageClient({ id }: { id: string }) {
   const [investigation, setInvestigation] = useState<Investigation | null>(null);
+  const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [storageMessage, setStorageMessage] = useState("");
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    const loaded = getInvestigation(id);
-    setInvestigation(loaded);
-    const health = getStorageHealth();
-    setStorageMessage(health.status === "available" ? "" : health.message);
-    setLoading(false);
+    let cancelled = false;
+    (async () => {
+      if (isBackendInvestigationId(id)) {
+        try {
+          const [loaded, persisted] = await Promise.all([
+            getInvestigation(id),
+            getInvestigationReport(id),
+          ]);
+          if (cancelled) return;
+          const artifact = validateJudgeArtifact(persisted.artifact);
+          const ui = investigationResponseToUi(loaded, { hasReport: true });
+          setInvestigation(ui);
+          setReport(judgeArtifactToReport(loaded, artifact, persisted.artifactHashSha256));
+        } catch (cause) {
+          if (!cancelled) {
+            setError(cause instanceof ApiRequestError ? cause.message : "Unable to load report.");
+          }
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+        return;
+      }
+
+      const loaded = getLegacyInvestigation(id);
+      if (cancelled) return;
+      setInvestigation(loaded);
+      setReport(loaded?.report ?? null);
+      const health = getStorageHealth();
+      setStorageMessage(health.status === "available" ? "" : health.message);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
   }, [id]);
 
   if (loading) {
@@ -40,20 +77,20 @@ export function ReportPageClient({ id }: { id: string }) {
         <StateCard
           tone="error"
           title="Investigation not found"
-          message={`No persisted investigation exists for ${id}. The app no longer falls back to the sample report for unknown IDs.`}
+          message={error || `No persisted investigation exists for ${id}. The app no longer falls back to the sample report for unknown IDs.`}
         />
       </AppShell>
     );
   }
 
   const completed = investigation.status === "completed" || investigation.status === "completed_with_limitations";
-  if (!completed || !investigation.report) {
+  if (!completed || !report) {
     return (
       <AppShell title="Evidence report" investigation={investigation}>
         <StateCard
           tone="warning"
           title="Report not ready"
-          message="This investigation has not completed yet. Finish the simulated live investigation before opening the evidence report."
+          message={error || "This investigation has not completed yet. Open the live investigation to monitor backend progress."}
           actionHref={`/investigations/${id}/live`}
           actionLabel="Open live investigation"
         />
@@ -68,7 +105,7 @@ export function ReportPageClient({ id }: { id: string }) {
 
   return (
     <ReportClient
-      report={investigation.report}
+      report={report}
       investigationId={id}
       investigation={investigation}
     />
