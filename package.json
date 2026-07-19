@@ -32,6 +32,8 @@
     "worker:evidence:once": "tsx server/worker/run-evidence-worker.ts --once",
     "worker:skeptic": "tsx server/worker/run-skeptic-worker.ts",
     "worker:skeptic:once": "tsx server/worker/run-skeptic-worker.ts --once",
+    "worker:judge": "tsx server/worker/run-judge-worker.ts",
+    "worker:judge:once": "tsx server/worker/run-judge-worker.ts --once",
     "db:migrate": "tsx server/db/migrate-cli.ts up",
     "db:rollback": "tsx server/db/migrate-cli.ts down"
   },

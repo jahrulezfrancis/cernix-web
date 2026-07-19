@@ -1,34 +1,32 @@
 import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { canTransitionBackendLifecycle, type BackendLifecycleStatus } from "@/lib/contracts/investigation-api";
+import type { CompletionDisposition } from "@/lib/contracts/judgment-report";
 import type { Database, InvestigationJobsTable } from "@/server/db/types";
 import { classifyDatabaseError } from "@/server/db/errors";
 import { ApplicationError } from "@/server/errors";
-import { isSkepticComplete, loadPersistedSkepticAnalysis, prepareReinvestigation } from "@/server/persistence/skeptic-repository";
+import { isReportComplete, loadPersistedReport } from "@/server/persistence/judgment-repository";
 import { PublicInvestigationEventSchema } from "@/server/persistence/events";
-import { readMaxReinvestigationCycles } from "@/server/skeptic/skeptic-config";
-import { readEvidenceJobMaxAttempts } from "./evidence-worker-config";
-import { readSkepticJobMaxAttempts } from "./skeptic-worker-config";
-import { enqueueJudgeJob } from "./judge-job-repository";
+import { readJudgeJobMaxAttempts } from "./judge-worker-config";
 
-export type SkepticJobStatus = InvestigationJobsTable["status"];
-export type SkepticJobClaim = Readonly<{
+export type JudgeJobStatus = InvestigationJobsTable["status"];
+export type JudgeJobClaim = Readonly<{
   jobId: string; investigationId: string; attemptNumber: number; attemptId: string;
   maxAttempts: number; leaseToken: string; leaseExpiresAt: Date;
 }>;
 export type ClaimResult =
-  | Readonly<{ kind: "claimed"; claim: SkepticJobClaim }>
+  | Readonly<{ kind: "claimed"; claim: JudgeJobClaim }>
   | Readonly<{ kind: "idle" }>
   | Readonly<{ kind: "reconciled"; jobId: string; status: "succeeded" | "failed" | "cancelled" }>;
 export type MutationResult =
-  | Readonly<{ kind: "updated"; status: SkepticJobStatus }>
+  | Readonly<{ kind: "updated"; status: JudgeJobStatus }>
   | Readonly<{ kind: "already_terminal"; status: "succeeded" | "failed" | "cancelled" }>
   | Readonly<{ kind: "lease_lost" }>
   | Readonly<{ kind: "not_found" }>
   | Readonly<{ kind: "lifecycle_conflict" }>;
 
 type JobRow = {
-  id: string; investigation_id: string; status: SkepticJobStatus; attempt_count: number;
+  id: string; investigation_id: string; status: JudgeJobStatus; attempt_count: number;
   max_attempts: number; available_at: Date; lease_owner: string | null; lease_token: string | null;
   lease_expires_at: Date | null; last_heartbeat_at: Date | null; started_at: Date | null;
   completed_at: Date | null; failed_at: Date | null; failure_code: string | null;
@@ -37,9 +35,9 @@ type JobRow = {
 type Db = Kysely<Database> | Transaction<Database>;
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CODE = /^[a-z][a-z0-9_]{0,63}$/;
-const POST_SKEPTIC = new Set<BackendLifecycleStatus>(["reinvestigating", "judging", "completed", "completed_with_limitations"]);
+const TERMINAL_SUCCESS = new Set<BackendLifecycleStatus>(["completed", "completed_with_limitations"]);
 
-function terminal(status: SkepticJobStatus): status is "succeeded" | "failed" | "cancelled" {
+function terminal(status: JudgeJobStatus): status is "succeeded" | "failed" | "cancelled" {
   return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 function validOwner(owner: string): void {
@@ -68,17 +66,20 @@ async function appendTransition(tx: Transaction<Database>, investigationId: stri
     stage: event.stage, public_payload: JSON.stringify(event.payload), created_at: now }).execute();
 }
 async function transitionInvestigation(tx: Transaction<Database>, row: { id: string; status: BackendLifecycleStatus; version: number;
-  started_at: Date | null; completed_at: Date | null }, to: BackendLifecycleStatus, now: Date, failureCode?: string) {
+  started_at: Date | null; completed_at: Date | null }, to: CompletionDisposition | "failed", now: Date, failureCode?: string) {
   if (row.status === to) return;
   if (!canTransitionBackendLifecycle(row.status, to)) throw new ApplicationError("invalid_lifecycle_transition", {});
-  await tx.updateTable("investigations").set({ status: to, version: sql`version + 1`, updated_at: now,
-    started_at: row.started_at ?? now, completed_at: row.completed_at,
-    failure_code: to === "failed" ? failureCode! : null }).where("id", "=", row.id).execute();
+  await tx.updateTable("investigations").set({
+    status: to, version: sql`version + 1`, updated_at: now,
+    started_at: row.started_at ?? now,
+    completed_at: to === "failed" ? row.completed_at : now,
+    failure_code: to === "failed" ? failureCode! : null,
+  }).where("id", "=", row.id).execute();
   await appendTransition(tx, row.id, row.status, to, now);
 }
 async function finishExpiredAttempt(tx: Transaction<Database>, job: JobRow, now: Date): Promise<void> {
   if (job.status !== "leased" || !job.lease_token) return;
-  requireOne(await tx.updateTable("skeptic_job_attempts").set({ status: "lease_expired", finished_at: now,
+  requireOne(await tx.updateTable("judge_job_attempts").set({ status: "lease_expired", finished_at: now,
     failure_code: "lease_expired", next_available_at: null }).where("job_id", "=", job.id)
     .where("lease_token", "=", job.lease_token).where("status", "=", "leased").executeTakeFirst());
 }
@@ -90,19 +91,19 @@ async function clearToTerminal(tx: Transaction<Database>, job: JobRow, status: "
     started_at: status === "succeeded" ? job.started_at ?? now : job.started_at, updated_at: now }).where("id", "=", job.id).execute();
 }
 
-export async function enqueueSkepticJob(tx: Transaction<Database>, investigationId: string, now: Date, uuid: () => string): Promise<void> {
+export async function enqueueJudgeJob(tx: Transaction<Database>, investigationId: string, now: Date, uuid: () => string): Promise<void> {
   const active = await tx.selectFrom("investigation_jobs").select("id")
-    .where("investigation_id", "=", investigationId).where("kind", "=", "investigation_skeptic")
+    .where("investigation_id", "=", investigationId).where("kind", "=", "investigation_judge")
     .where("status", "in", ["queued", "leased", "retry_wait", "succeeded"]).executeTakeFirst();
   if (active) return;
   await tx.insertInto("investigation_jobs").values({
-    id: uuid(), investigation_id: investigationId, kind: "investigation_skeptic", status: "queued",
-    max_attempts: readSkepticJobMaxAttempts(), available_at: now, lease_owner: null, lease_token: null,
+    id: uuid(), investigation_id: investigationId, kind: "investigation_judge", status: "queued",
+    max_attempts: readJudgeJobMaxAttempts(), available_at: now, lease_owner: null, lease_token: null,
     lease_expires_at: null, last_heartbeat_at: null, started_at: null, completed_at: null, failed_at: null,
     failure_code: null, created_at: now, updated_at: now,
   }).execute();
   const event = PublicInvestigationEventSchema.parse({
-    type: "investigation_started", stage: "challenging", payload: { jobKind: "investigation_skeptic" },
+    type: "investigation_started", stage: "judging", payload: { jobKind: "investigation_judge" },
   });
   await tx.insertInto("investigation_events").values({
     investigation_id: investigationId, type: event.type, stage: event.stage,
@@ -110,46 +111,14 @@ export async function enqueueSkepticJob(tx: Transaction<Database>, investigation
   }).execute();
 }
 
-async function enqueueEvidenceJob(tx: Transaction<Database>, investigationId: string, now: Date, uuid: () => string): Promise<void> {
-  const active = await tx.selectFrom("investigation_jobs").select("id")
-    .where("investigation_id", "=", investigationId).where("kind", "=", "investigation_evidence")
-    .where("status", "in", ["queued", "leased", "retry_wait"]).executeTakeFirst();
-  if (active) return;
-  await tx.insertInto("investigation_jobs").values({
-    id: uuid(), investigation_id: investigationId, kind: "investigation_evidence", status: "queued",
-    max_attempts: readEvidenceJobMaxAttempts(), available_at: now, lease_owner: null, lease_token: null,
-    lease_expires_at: null, last_heartbeat_at: null, started_at: null, completed_at: null, failed_at: null,
-    failure_code: null, created_at: now, updated_at: now,
-  }).execute();
-  const event = PublicInvestigationEventSchema.parse({
-    type: "investigation_started", stage: "reinvestigating", payload: { jobKind: "investigation_evidence" },
-  });
-  await tx.insertInto("investigation_events").values({
-    investigation_id: investigationId, type: event.type, stage: event.stage,
-    public_payload: JSON.stringify(event.payload), created_at: now,
-  }).execute();
+async function finalizeJudgeOutcome(tx: Transaction<Database>, investigation: { id: string; status: BackendLifecycleStatus;
+  version: number; started_at: Date | null; completed_at: Date | null }, now: Date): Promise<void> {
+  const report = await loadPersistedReport(tx, investigation.id);
+  if (!report) throw new ApplicationError("conflict", {});
+  await transitionInvestigation(tx, investigation, report.completionDisposition, now);
 }
 
-async function finalizeSkepticOutcome(tx: Transaction<Database>, investigation: { id: string; status: BackendLifecycleStatus;
-  version: number; started_at: Date | null; completed_at: Date | null; reinvestigation_cycle_count: number },
-  now: Date, uuid: () => string): Promise<void> {
-  const analysis = await loadPersistedSkepticAnalysis(tx, investigation.id);
-  if (!analysis) throw new ApplicationError("conflict", {});
-  const maxCycles = readMaxReinvestigationCycles();
-  const needsReinvestigation = analysis.outcome === "reinvestigation_required"
-    && analysis.artifact.reinvestigationTaskKeys.length > 0
-    && investigation.reinvestigation_cycle_count < maxCycles;
-  if (needsReinvestigation) {
-    await transitionInvestigation(tx, investigation, "reinvestigating", now);
-    await prepareReinvestigation(tx, investigation.id, analysis.artifact.reinvestigationTaskKeys, () => now);
-    await enqueueEvidenceJob(tx, investigation.id, now, uuid);
-    return;
-  }
-  await transitionInvestigation(tx, investigation, "judging", now);
-  await enqueueJudgeJob(tx, investigation.id, now, uuid);
-}
-
-export class SkepticJobRepository {
+export class JudgeJobRepository {
   constructor(private readonly db: Kysely<Database>, private readonly uuid: () => string = randomUUID) {}
 
   async claimNext(options: { workerOwner: string; leaseSeconds: number }): Promise<ClaimResult> {
@@ -161,7 +130,7 @@ export class SkepticJobRepository {
             lease_token, lease_expires_at, last_heartbeat_at, started_at, completed_at, failed_at,
             failure_code, created_at, updated_at
           from investigation_jobs
-          where kind = 'investigation_skeptic' and (
+          where kind = 'investigation_judge' and (
             (status in ('queued','retry_wait') and available_at <= transaction_timestamp()) or
             (status = 'leased' and lease_expires_at <= transaction_timestamp())
           )
@@ -171,29 +140,27 @@ export class SkepticJobRepository {
         if (!selected) return { kind: "idle" };
         const now = await databaseNow(tx);
         const investigation = await tx.selectFrom("investigations")
-          .select(["id", "status", "version", "started_at", "completed_at", "reinvestigation_cycle_count"])
+          .select(["id", "status", "version", "started_at", "completed_at"])
           .where("id", "=", selected.investigation_id).forUpdate().executeTakeFirst();
         if (!investigation) return { kind: "reconciled", jobId: selected.id, status: "cancelled" };
         await finishExpiredAttempt(tx, selected, now);
-        const skepticComplete = await isSkepticComplete(tx, selected.investigation_id);
+        const reportComplete = await isReportComplete(tx, selected.investigation_id);
 
-        if (investigation.status === "failed" || investigation.status === "completed" || investigation.status === "completed_with_limitations") {
+        if (investigation.status === "failed" || TERMINAL_SUCCESS.has(investigation.status)) {
           await clearToTerminal(tx, selected, "cancelled", investigation.status === "failed" ? "investigation_failed" : "investigation_terminal", now);
           return { kind: "reconciled", jobId: selected.id, status: "cancelled" };
         }
-        if (investigation.status !== "challenging") {
-          await clearToTerminal(tx, selected, "cancelled", "skeptic_unexpected_state", now);
+        if (investigation.status !== "judging") {
+          await clearToTerminal(tx, selected, "cancelled", "judge_unexpected_state", now);
           return { kind: "reconciled", jobId: selected.id, status: "cancelled" };
         }
-        if (skepticComplete) {
-          if (!POST_SKEPTIC.has(investigation.status)) {
-            await finalizeSkepticOutcome(tx, investigation, now, this.uuid);
-          }
+        if (reportComplete) {
+          await finalizeJudgeOutcome(tx, investigation, now);
           await clearToTerminal(tx, selected, "succeeded", null, now);
           return { kind: "reconciled", jobId: selected.id, status: "succeeded" };
         }
         if (selected.attempt_count >= selected.max_attempts) {
-          if (investigation.status === "challenging") await transitionInvestigation(tx, investigation, "failed", now, "attempts_exhausted");
+          await transitionInvestigation(tx, investigation, "failed", now, "attempts_exhausted");
           await clearToTerminal(tx, selected, "failed", "attempts_exhausted", now);
           return { kind: "reconciled", jobId: selected.id, status: "failed" };
         }
@@ -204,7 +171,7 @@ export class SkepticJobRepository {
           lease_expires_at: sql`transaction_timestamp() + make_interval(secs => ${options.leaseSeconds})`,
           started_at: selected.started_at ?? now, completed_at: null, failed_at: null, failure_code: null,
           updated_at: now }).where("id", "=", selected.id).returning("lease_expires_at").executeTakeFirstOrThrow();
-        const attempt = await tx.insertInto("skeptic_job_attempts").values({ job_id: selected.id,
+        const attempt = await tx.insertInto("judge_job_attempts").values({ job_id: selected.id,
           investigation_id: selected.investigation_id, attempt_number: attemptNumber, lease_token: leaseToken,
           worker_owner: options.workerOwner, status: "leased", started_at: now, last_heartbeat_at: now,
           finished_at: null, failure_code: null, next_available_at: null }).returning("id").executeTakeFirstOrThrow();
@@ -225,7 +192,7 @@ export class SkepticJobRepository {
           .where("id", "=", jobId).where("status", "=", "leased").where("lease_token", "=", leaseToken)
           .where("lease_expires_at", ">", now).returning("id").executeTakeFirst();
         if (!updated) return this.missedMutation(tx, jobId);
-        requireOne(await tx.updateTable("skeptic_job_attempts").set({ last_heartbeat_at: now }).where("job_id", "=", jobId)
+        requireOne(await tx.updateTable("judge_job_attempts").set({ last_heartbeat_at: now }).where("job_id", "=", jobId)
           .where("lease_token", "=", leaseToken).where("status", "=", "leased").executeTakeFirst());
         return { kind: "updated", status: "leased" };
       });
@@ -240,22 +207,22 @@ export class SkepticJobRepository {
         if (locked.status === "succeeded") {
           const investigation = await tx.selectFrom("investigations").select("status")
             .where("id", "=", locked.investigation_id).forUpdate().executeTakeFirst();
-          if (!investigation || investigation.status === "challenging" ||
-              !await isSkepticComplete(tx, locked.investigation_id)) return { kind: "lifecycle_conflict" };
+          if (!investigation || investigation.status === "judging" ||
+              !await isReportComplete(tx, locked.investigation_id)) return { kind: "lifecycle_conflict" };
           return { kind: "already_terminal", status: "succeeded" };
         }
         if (locked.status === "failed" || locked.status === "cancelled") return { kind: "already_terminal", status: locked.status };
         const now = await databaseNow(tx);
         if (!this.ownsLiveLease(locked, leaseToken, now)) return { kind: "lease_lost" };
         const investigation = await tx.selectFrom("investigations")
-          .select(["id", "status", "version", "started_at", "completed_at", "reinvestigation_cycle_count"])
+          .select(["id", "status", "version", "started_at", "completed_at"])
           .where("id", "=", locked.investigation_id).forUpdate().executeTakeFirst();
         if (!investigation) return { kind: "not_found" };
-        if (investigation.status !== "challenging" || !await isSkepticComplete(tx, locked.investigation_id)) {
+        if (investigation.status !== "judging" || !await isReportComplete(tx, locked.investigation_id)) {
           return { kind: "lifecycle_conflict" };
         }
-        await finalizeSkepticOutcome(tx, investigation, now, this.uuid);
-        requireOne(await tx.updateTable("skeptic_job_attempts").set({ status: "succeeded", finished_at: now })
+        await finalizeJudgeOutcome(tx, investigation, now);
+        requireOne(await tx.updateTable("judge_job_attempts").set({ status: "succeeded", finished_at: now })
           .where("job_id", "=", jobId).where("lease_token", "=", leaseToken).where("status", "=", "leased").executeTakeFirst());
         await clearToTerminal(tx, locked, "succeeded", null, now);
         return { kind: "updated", status: "succeeded" };
@@ -274,7 +241,7 @@ export class SkepticJobRepository {
         if (!this.ownsLiveLease(locked, leaseToken, now)) return { kind: "lease_lost" };
         if (locked.attempt_count >= locked.max_attempts) return { kind: "lifecycle_conflict" };
         const next = (await sql<{ next: Date }>`select transaction_timestamp() + make_interval(secs => ${delaySeconds}) as next`.execute(tx)).rows[0].next;
-        requireOne(await tx.updateTable("skeptic_job_attempts").set({ status: "retry_scheduled", finished_at: now,
+        requireOne(await tx.updateTable("judge_job_attempts").set({ status: "retry_scheduled", finished_at: now,
           failure_code: failureCode, next_available_at: next }).where("job_id", "=", jobId)
           .where("lease_token", "=", leaseToken).where("status", "=", "leased").executeTakeFirst());
         await tx.updateTable("investigation_jobs").set({ status: "retry_wait", available_at: next,
@@ -297,9 +264,9 @@ export class SkepticJobRepository {
         const investigation = await tx.selectFrom("investigations").select(["id", "status", "version", "started_at", "completed_at"])
           .where("id", "=", locked.investigation_id).forUpdate().executeTakeFirst();
         if (!investigation) return { kind: "not_found" };
-        if (investigation.status === "challenging") await transitionInvestigation(tx, investigation, "failed", now, failureCode);
+        if (investigation.status === "judging") await transitionInvestigation(tx, investigation, "failed", now, failureCode);
         else if (investigation.status !== "failed") return { kind: "lifecycle_conflict" };
-        requireOne(await tx.updateTable("skeptic_job_attempts").set({ status: "failed", finished_at: now, failure_code: failureCode })
+        requireOne(await tx.updateTable("judge_job_attempts").set({ status: "failed", finished_at: now, failure_code: failureCode })
           .where("job_id", "=", jobId).where("lease_token", "=", leaseToken).where("status", "=", "leased").executeTakeFirst());
         await clearToTerminal(tx, locked, "failed", failureCode, now);
         return { kind: "updated", status: "failed" };

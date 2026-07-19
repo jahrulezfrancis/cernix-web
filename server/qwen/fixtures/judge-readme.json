@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "investigationId": "22222222-2222-4222-8222-222222222222",
+  "snapshotManifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "commitSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "claimJudgments": [
+    {
+      "id": "judgment_readme",
+      "claimId": "33333333-3333-4333-8333-333333333333",
+      "verdict": "partially_verified",
+      "confidence": "moderate",
+      "summary": "README evidence supports repository structure but not runtime behavior.",
+      "reasoning": "The inspected repository contains a README excerpt, which supports structural presence but not the full behavioral claim.",
+      "confidenceFactors": ["README excerpt is grounded in persisted evidence."],
+      "unprovenAspects": ["Runtime behavior and integration coverage."],
+      "whatCouldChangeVerdict": ["Add integration tests that exercise the claimed behavior."]
+    }
+  ],
+  "limitations": [
+    {
+      "id": "lim_static_only",
+      "claimId": "33333333-3333-4333-8333-333333333333",
+      "description": "Judgment is limited to static repository inspection.",
+      "impact": "medium"
+    }
+  ],
+  "maintainerActions": [
+    {
+      "id": "act_add_tests",
+      "claimId": "33333333-3333-4333-8333-333333333333",
+      "action": "Add an integration test covering the claimed behavior.",
+      "priority": "high"
+    }
+  ],
+  "reportSummary": "The claim is only partially supported by repository structure evidence.",
+  "completionDisposition": "completed_with_limitations"
+}
