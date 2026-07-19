@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitHubSnapshotConfig } from "./config";
-import { applyAdmissionPolicy, isUnambiguouslyNormalizedPath, primaryExclusion } from "./file-policy";
+import { applyAdmissionPolicy, compareUtf8, isUnambiguouslyNormalizedPath, primaryExclusion } from "./file-policy";
 
 const config: GitHubSnapshotConfig = { token: null, apiVersion: "2026-03-10", requestTimeoutMs: 100,
   snapshotDeadlineMs: 1_000, maxRequests: 50, maxInspectedEntries: 100, maxAdmittedFiles: 1,
@@ -31,5 +31,9 @@ describe("admission policy v1", () => {
     for (const path of ["/absolute", "a\\b", "a//b", "a/./b", "a/../b", "bad\u0000name", "e\u0301.ts"])
       expect(isUnambiguouslyNormalizedPath(path)).toBe(false);
     expect(isUnambiguouslyNormalizedPath("src/é.ts")).toBe(true);
+  });
+
+  it("sorts multibyte paths by UTF-8 bytes rather than UTF-16 code units", () => {
+    expect(["𐀀.ts", "\uE000.ts"].sort(compareUtf8)).toEqual(["\uE000.ts", "𐀀.ts"]);
   });
 });

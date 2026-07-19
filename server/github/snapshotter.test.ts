@@ -17,10 +17,11 @@ function blob(content: Uint8Array | string) {
   return { sha, raw, response: { sha, encoding: "base64", size: raw.byteLength, content: raw.toString("base64") } };
 }
 function response(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status }); }
+function repositoryResponse(id = "9007199254740991") { return new Response(`{"id":${id},"name":"Widget","private":false,"archived":false,"disabled":false,"size":1,"default_branch":"main","owner":{"login":"Acme"}}`); }
 function baseRoutes(tree: unknown, blobs: Map<string, unknown> = new Map()) {
   return async (input: string | URL | Request) => {
     const url = String(input);
-    if (url === "https://api.github.com/repos/Acme/Widget") return response({ id: "9007199254740991", name: "Widget", private: false, archived: false, disabled: false, size: 1, default_branch: "main", owner: { login: "Acme" } });
+    if (url === "https://api.github.com/repos/Acme/Widget") return repositoryResponse();
     if (url.endsWith("/commits/main")) return response({ sha: COMMIT.toUpperCase(), commit: { tree: { sha: ROOT.toUpperCase() } } });
     if (url.endsWith(`/git/trees/${ROOT}?recursive=1`)) return response(tree);
     const blobSha = url.match(/\/git\/blobs\/([0-9a-f]{40})$/)?.[1];
@@ -91,28 +92,29 @@ describe("immutable repository snapshotter", () => {
     expect(truncatedCalls.filter((url) => url.includes("/git/trees/")).slice(1).every((url) => !url.includes("recursive"))).toBe(true);
   });
 
-  it("excludes strict-base64 and Git object identity mismatches without persisting bodies", async () => {
+  it("aborts on Git object identity mismatches", async () => {
     const valid = blob("safe\n");
     const tree = { sha: ROOT, truncated: false, tree: [treeEntry("bad.ts", valid)] };
     const mismatch = { ...valid.response, sha: "d".repeat(40) };
-    const artifact = await buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: "main",
-      client: new GitHubClient(config, baseRoutes(tree, new Map([[valid.sha, mismatch]]))), config });
-    expect(artifact.entries[0]).toMatchObject({ decision: "excluded", exclusionReason: "blob_mismatch",
-      rawContent: undefined, normalizedText: undefined, rawSha256: null });
+    await expect(buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: "main",
+      client: new GitHubClient(config, baseRoutes(tree, new Map([[valid.sha, mismatch]]))), config }))
+      .rejects.toMatchObject({ failureCode: "blob_verification_failed" });
   });
 
   it.each([
     [new Uint8Array([0xff]), {}, "invalid_utf8"],
     [new Uint8Array([0, 65]), {}, "binary_content"],
-    [Buffer.from("safe\n"), { encoding: "utf-8" }, "unsupported_encoding"],
-    [Buffer.from("safe\n"), { content: "%%%=" }, "unsupported_encoding"],
-    [Buffer.from("safe\n"), { size: 99 }, "content_size_mismatch"],
+    [Buffer.from("safe\n"), { encoding: "utf-8" }, "blob_verification_failed"],
+    [Buffer.from("safe\n"), { content: "%%%=" }, "blob_verification_failed"],
+    [Buffer.from("safe\n"), { size: 99 }, "blob_verification_failed"],
   ])("excludes content that fails byte validation as %s", async (rawValue, mutation, reason) => {
     const object = blob(rawValue as Uint8Array);
     const tree = { sha: ROOT, truncated: false, tree: [treeEntry("candidate.txt", object)] };
-    const artifact = await buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: null,
+    const promise = buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: null,
       client: new GitHubClient(config, baseRoutes(tree, new Map([[object.sha, { ...object.response, ...mutation }]]))), config });
-    expect(artifact.entries[0]).toMatchObject({ decision: "excluded", exclusionReason: reason, rawContent: undefined });
+    if (reason === "invalid_utf8" || reason === "binary_content") {
+      expect((await promise).entries[0]).toMatchObject({ decision: "excluded", exclusionReason: reason, rawContent: undefined });
+    } else await expect(promise).rejects.toMatchObject({ failureCode: reason });
   });
 
   it("enforces actual byte and normalized line limits after download", async () => {
@@ -194,6 +196,83 @@ describe("immutable repository snapshotter", () => {
     await buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: null,
       client: new GitHubClient({ ...config, maxConcurrency: 2 }, fetcher), config: { ...config, maxConcurrency: 2 } });
     expect(peak).toBe(2);
+  });
+
+  it("admits verified bytes greedily in canonical order with a bounded completion window", async () => {
+    const objects = [blob("aaaa"), blob("bbbb"), blob("c")];
+    const tree = { sha: ROOT, truncated: false, tree: objects.map((object, index) => ({ ...treeEntry(`${index}.txt`, object), size: undefined })) };
+    const blobs = new Map(objects.map((object) => [object.sha, object.response]));
+    const build = async (maxConcurrency: number) => {
+      let peak = 0;
+      const fixture = baseRoutes(tree, blobs);
+      const fetcher = async (input: string | URL | Request) => {
+        const sha = String(input).match(/\/git\/blobs\/([0-9a-f]{40})$/)?.[1];
+        if (sha) await new Promise((resolve) => setTimeout(resolve, sha === objects[0].sha ? 8 : 1));
+        return fixture(input);
+      };
+      const bounded = { ...config, maxConcurrency, maxFileBytes: 10, maxTotalTextBytes: 5 };
+      const artifact = await buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: null,
+        client: new GitHubClient(bounded, fetcher), config: bounded, testHooks: { retainedBytes: (bytes) => { peak = Math.max(peak, bytes); } } });
+      expect(peak).toBeLessThanOrEqual(bounded.maxTotalTextBytes + bounded.maxConcurrency * bounded.maxFileBytes);
+      return artifact;
+    };
+    const serial = await build(1), concurrent = await build(3);
+    expect(concurrent.entries.map((entry) => entry.exclusionReason)).toEqual([null, "total_bytes_limit", null]);
+    expect(concurrent.totalAdmittedBytes).toBe("5");
+    expect(concurrent.manifestHashSha256).toBe(serial.manifestHashSha256);
+  });
+
+  it.each([
+    ["response sha", (object: ReturnType<typeof blob>) => ({ ...object.response, sha: "f".repeat(40) }), undefined],
+    ["unsupported encoding", (object: ReturnType<typeof blob>) => ({ ...object.response, encoding: "utf-8" }), undefined],
+    ["missing encoding", (object: ReturnType<typeof blob>) => { const { encoding: _encoding, ...rest } = object.response; return rest; }, undefined],
+    ["invalid base64 alphabet", (object: ReturnType<typeof blob>) => ({ ...object.response, content: "%%%=" }), undefined],
+    ["base64 whitespace", (object: ReturnType<typeof blob>) => ({ ...object.response, content: `${object.response.content}\n` }), undefined],
+    ["missing base64 padding", (object: ReturnType<typeof blob>) => ({ ...object.response, content: object.response.content.slice(0, -1) }), undefined],
+    ["excess base64 padding", (object: ReturnType<typeof blob>) => ({ ...object.response, content: `${object.response.content}=` }), undefined],
+    ["middle base64 padding", (object: ReturnType<typeof blob>) => ({ ...object.response, content: "c2=FmZSE" }), undefined],
+    ["noncanonical trailing bits", (object: ReturnType<typeof blob>) => ({ ...object.response, content: "TR==" }), undefined],
+    ["response size", (object: ReturnType<typeof blob>) => ({ ...object.response, size: object.raw.byteLength + 1 }), undefined],
+    ["tree size", (object: ReturnType<typeof blob>) => object.response, 99],
+    ["understated tree size", (object: ReturnType<typeof blob>) => object.response, 1],
+    ["recomputed git sha", (object: ReturnType<typeof blob>) => ({ ...object.response, content: Buffer.from("other").toString("base64") }), undefined],
+  ])("fails the complete snapshot for a provider integrity anomaly: %s", async (_name, mutate, treeSize) => {
+    const object = blob("safe!");
+    const entry = { ...treeEntry("candidate.txt", object), ...(treeSize === undefined ? {} : { size: treeSize }) };
+    const tree = { sha: ROOT, truncated: false, tree: [entry] };
+    await expect(buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: null,
+      client: new GitHubClient(config, baseRoutes(tree, new Map([[object.sha, mutate(object)]]))), config }))
+      .rejects.toMatchObject({ failureCode: "blob_verification_failed", code: "dependency_unavailable" });
+  });
+
+  it("enforces the same depth boundary on a complete recursive tree", async () => {
+    const bounded = { ...config, maxTreeDepth: 1 };
+    const direct = { sha: ROOT, truncated: false, tree: [
+      { path: "src", mode: "040000", type: "tree", sha: SUBTREE },
+      { path: "src/deep/file.ts", mode: "100644", type: "blob", sha: "d".repeat(40), size: 1 },
+    ] };
+    await expect(buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: null,
+      client: new GitHubClient(bounded, baseRoutes(direct)), config: bounded }))
+      .rejects.toMatchObject({ failureCode: "tree_depth_exceeded" });
+  });
+
+  it("mounts a repeated subtree at every prefix without treating aliases as cycles", async () => {
+    const object = blob("shared\n");
+    let subtreeCalls = 0;
+    const fetcher = async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith(`/git/trees/${ROOT}?recursive=1`)) return response({ sha: ROOT, truncated: true, tree: [] });
+      if (url.endsWith(`/git/trees/${ROOT}`)) return response({ sha: ROOT, truncated: false, tree: [
+        { path: "a", mode: "040000", type: "tree", sha: SUBTREE },
+        { path: "b", mode: "040000", type: "tree", sha: SUBTREE },
+      ] });
+      if (url.endsWith(`/git/trees/${SUBTREE}`)) { subtreeCalls++; return response({ sha: SUBTREE, truncated: false, tree: [treeEntry("shared.txt", object)] }); }
+      return baseRoutes({}, new Map([[object.sha, object.response]]))(input);
+    };
+    const artifact = await buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: null,
+      client: new GitHubClient(config, fetcher), config });
+    expect(artifact.entries.map((entry) => entry.path)).toEqual(["a", "a/shared.txt", "b", "b/shared.txt"]);
+    expect(subtreeCalls).toBe(1);
   });
 });
 

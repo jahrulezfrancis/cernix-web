@@ -8,10 +8,17 @@ import { InvestigationRepository } from "./investigation-repository";
 import { RepositorySnapshotRepository } from "./repository-snapshot-repository";
 import { canonicalizeManifest, finalizeArtifact } from "@/server/github/manifest";
 import type { SnapshotEntry } from "@/server/github/contracts";
+import { RepositorySnapshotService } from "@/server/github/snapshot-service";
+import { GitHubClient } from "@/server/github/client";
+import { buildRepositorySnapshot } from "@/server/github/snapshotter";
+import type { GitHubSnapshotConfig } from "@/server/github/config";
 
 let harness: Awaited<ReturnType<typeof createDisposableTestDatabase>>;
 let db: Kysely<Database>, investigations: InvestigationRepository, snapshots: RepositorySnapshotRepository;
 const SECRET_SENTINEL = `ghp_${"S".repeat(36)}`;
+const githubConfig: GitHubSnapshotConfig = { token: null, apiVersion: "2026-03-10", requestTimeoutMs: 1_000,
+  snapshotDeadlineMs: 10_000, maxRequests: 50, maxInspectedEntries: 100, maxAdmittedFiles: 20,
+  maxFileBytes: 1_024, maxTotalTextBytes: 10_000, maxLinesPerFile: 100, maxTreeDepth: 10, maxConcurrency: 2 };
 
 async function truncate() {
   await sql`truncate repository_snapshot_files, repository_snapshot_entries, repository_snapshots, investigation_jobs, idempotency_records, investigation_events, manual_claims, investigations restart identity cascade`.execute(db);
@@ -54,13 +61,20 @@ describe.sequential("immutable repository snapshot persistence", () => {
     const columns = await sql<{ table_name: string; count: string }>`select table_name,count(*)::text count from information_schema.columns where table_schema='public' and table_name like 'repository_snapshot%' group by table_name order by table_name`.execute(db);
     expect(columns.rows).toEqual([
       { table_name: "repository_snapshot_entries", count: "10" },
-      { table_name: "repository_snapshot_files", count: "11" },
+      { table_name: "repository_snapshot_files", count: "12" },
       { table_name: "repository_snapshots", count: "19" },
     ]);
     const indexes = await sql<{ indexname: string }>`select indexname from pg_indexes where schemaname='public' and indexname in ('repository_snapshots_identity_idx','repository_snapshot_files_snapshot_idx') order by indexname`.execute(db);
     expect(indexes.rows.map((row) => row.indexname)).toEqual(["repository_snapshot_files_snapshot_idx", "repository_snapshots_identity_idx"]);
+    const investigation = await snapshotting();
+    await snapshots.createForInvestigation(investigation.id, artifact());
+    const legacyBefore = Number((await db.selectFrom("investigation_events").select(db.fn.countAll().as("count"))
+      .where("type", "!=", "repository_snapshot_persisted").executeTakeFirstOrThrow()).count);
     await rollbackOne(db);
     expect((await sql`select to_regclass('public.repository_snapshots') name`.execute(db)).rows[0]).toMatchObject({ name: null });
+    expect(Number((await db.selectFrom("investigation_events").select(db.fn.countAll().as("count"))
+      .where("type", "!=", "repository_snapshot_persisted").executeTakeFirstOrThrow()).count)).toBe(legacyBefore);
+    expect(await db.selectFrom("investigation_events").select("sequence").where("type", "=", "repository_snapshot_persisted").execute()).toHaveLength(0);
     await migrateToLatest(db);
   });
 
@@ -132,12 +146,92 @@ describe.sequential("immutable repository snapshot persistence", () => {
     expect(await db.selectFrom("investigation_events").select("sequence").where("type", "=", "repository_snapshot_persisted").execute()).toHaveLength(0);
   });
 
+  it("persists nothing for every fatal provider verification anomaly and permits one later healthy artifact", async () => {
+    const investigation = await snapshotting();
+    const raw = Buffer.from("safe!"), objectSha = createHash("sha1").update(`blob ${raw.byteLength}\0`).update(raw).digest("hex");
+    const validBlob = { sha: objectSha, encoding: "base64", size: raw.byteLength, content: raw.toString("base64") };
+    const anomalies: Array<{ blob: Record<string, unknown>; treeSize?: number }> = [
+      { blob: { ...validBlob, sha: "f".repeat(40) } }, { blob: { ...validBlob, encoding: "utf-8" } },
+      { blob: (() => { const { encoding: _encoding, ...rest } = validBlob; return rest; })() },
+      { blob: { ...validBlob, content: "%%%=" } }, { blob: { ...validBlob, content: `${validBlob.content}\n` } },
+      { blob: { ...validBlob, size: raw.byteLength + 1 } }, { blob: validBlob, treeSize: 1 },
+      { blob: { ...validBlob, content: Buffer.from("other").toString("base64") } },
+    ];
+    for (const anomaly of anomalies) {
+      const builder = async () => buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: null,
+        config: githubConfig, client: new GitHubClient(githubConfig, async (input) => {
+          const url = String(input);
+          if (url.endsWith("/repos/Acme/Widget")) return new Response('{"id":9007199254740992,"name":"Widget","private":false,"archived":false,"disabled":false,"size":1,"default_branch":"main","owner":{"login":"Acme"}}');
+          if (url.endsWith("/commits/main")) return new Response(JSON.stringify({ sha: "a".repeat(40), commit: { tree: { sha: "b".repeat(40) } } }));
+          if (url.includes("/git/trees/")) return new Response(JSON.stringify({ sha: "b".repeat(40), truncated: false, tree: [
+            { path: "file.txt", mode: "100644", type: "blob", sha: objectSha, size: anomaly.treeSize ?? raw.byteLength },
+          ] }));
+          if (url.includes("/git/blobs/")) return new Response(JSON.stringify(anomaly.blob));
+          throw new Error("unexpected offline fixture request");
+        }) });
+      await expect(new RepositorySnapshotService(snapshots, builder).snapshotInvestigation(investigation.id))
+        .rejects.toMatchObject({ failureCode: "blob_verification_failed" });
+      expect(await tableCount("repository_snapshots")).toBe(0);
+      expect(await tableCount("repository_snapshot_entries")).toBe(0);
+      expect(await tableCount("repository_snapshot_files")).toBe(0);
+      expect(await db.selectFrom("investigation_events").select("sequence").where("type", "=", "repository_snapshot_persisted").execute()).toHaveLength(0);
+    }
+    const healthy = new RepositorySnapshotService(snapshots, async () => artifact());
+    await expect(healthy.snapshotInvestigation(investigation.id)).resolves.toMatchObject({ admittedFileCount: 1 });
+    expect(await tableCount("repository_snapshots")).toBe(1);
+  });
+
   it("enforces snapshot-entry relationships and cascade deletion directly", async () => {
     const investigation = await snapshotting(), persisted = await snapshots.createForInvestigation(investigation.id, artifact());
     const excluded = persisted.entries.find((entry) => entry.decision === "excluded")!;
-    await expect(sql`insert into repository_snapshot_files(id,snapshot_id,entry_id,raw_content,normalized_text,raw_sha256,normalized_sha256,byte_count,line_count,created_at)
-      values (${randomUUID()},${randomUUID()},${excluded.id},${Buffer.from("x")},'x',${"a".repeat(64)},${"b".repeat(64)},1,1,now())`.execute(db)).rejects.toBeTruthy();
+    const admitted = persisted.entries.find((entry) => entry.decision === "admitted")!;
+    await expect(sql`insert into repository_snapshot_files(id,snapshot_id,entry_id,entry_decision,raw_content,normalized_text,raw_sha256,normalized_sha256,byte_count,line_count,created_at)
+      values (${randomUUID()},${persisted.id},${excluded.id},'admitted',${Buffer.from("x")},'x',${"a".repeat(64)},${"b".repeat(64)},1,1,now())`.execute(db)).rejects.toBeTruthy();
+    const otherInvestigation = await snapshotting(), other = await snapshots.createForInvestigation(otherInvestigation.id, artifact());
+    await expect(sql`insert into repository_snapshot_files(id,snapshot_id,entry_id,entry_decision,raw_content,normalized_text,raw_sha256,normalized_sha256,byte_count,line_count,created_at)
+      values (${randomUUID()},${other.id},${admitted.id},'admitted',${Buffer.from("x")},'x',${"a".repeat(64)},${"b".repeat(64)},1,1,now())`.execute(db)).rejects.toBeTruthy();
     await db.deleteFrom("investigations").where("id", "=", investigation.id).execute();
-    expect(await tableCount("repository_snapshots")).toBe(0);
+    expect(await tableCount("repository_snapshots")).toBe(1);
+  });
+
+  it("rejects a missing admitted body before replay", async () => {
+    const investigation = await snapshotting(), persisted = await snapshots.createForInvestigation(investigation.id, artifact());
+    await db.deleteFrom("repository_snapshot_files").where("snapshot_id", "=", persisted.id).execute();
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+  });
+
+  it("rejects same-length raw substitution and normalized text drift before replay", async () => {
+    const investigation = await snapshotting(), persisted = await snapshots.createForInvestigation(investigation.id, artifact());
+    await db.updateTable("repository_snapshot_files").set({ raw_content: Buffer.from("jello\r\n") }).where("snapshot_id", "=", persisted.id).execute();
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+    await db.updateTable("repository_snapshot_files").set({ raw_content: Buffer.from("hello\r\n"), normalized_text: "jello\n" }).where("snapshot_id", "=", persisted.id).execute();
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+  });
+
+  it("rejects stored raw hash, normalized hash, and line-count drift before replay", async () => {
+    const investigation = await snapshotting(), persisted = await snapshots.createForInvestigation(investigation.id, artifact());
+    const built = artifact(), admitted = built.entries.find((entry) => entry.decision === "admitted")!;
+    await db.updateTable("repository_snapshot_files").set({ raw_sha256: "f".repeat(64) }).where("snapshot_id", "=", persisted.id).execute();
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+    await db.updateTable("repository_snapshot_files").set({ raw_sha256: admitted.rawSha256!, normalized_sha256: "f".repeat(64) }).where("snapshot_id", "=", persisted.id).execute();
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+    await db.updateTable("repository_snapshot_files").set({ normalized_sha256: admitted.normalizedSha256!, line_count: 2 }).where("snapshot_id", "=", persisted.id).execute();
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+  });
+
+  it("rejects count, order, and manifest identity drift before replay", async () => {
+    const investigation = await snapshotting(), persisted = await snapshots.createForInvestigation(investigation.id, artifact());
+    await db.updateTable("repository_snapshots").set({ admitted_file_count: 0, excluded_entry_count: 2, total_admitted_bytes: "0" }).where("id", "=", persisted.id).execute();
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+    let githubBuilds = 0;
+    const service = new RepositorySnapshotService(snapshots, async () => { githubBuilds++; return artifact(); });
+    await expect(service.snapshotInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+    expect(githubBuilds).toBe(0);
+    await db.updateTable("repository_snapshots").set({ admitted_file_count: 1, excluded_entry_count: 1, total_admitted_bytes: artifact().totalAdmittedBytes }).where("id", "=", persisted.id).execute();
+    await db.updateTable("repository_snapshot_entries").set({ manifest_order: 2 }).where("snapshot_id", "=", persisted.id).where("path", "=", ".env").execute();
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+    await db.updateTable("repository_snapshot_entries").set({ manifest_order: 0 }).where("snapshot_id", "=", persisted.id).where("path", "=", ".env").execute();
+    await db.updateTable("repository_snapshots").set({ manifest_hash_sha256: "f".repeat(64) }).where("id", "=", persisted.id).execute();
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
   });
 });
