@@ -10,7 +10,9 @@ export type PlanningFailureCode =
   | "qwen_output_too_large"
   | "plan_schema_invalid"
   | "plan_context_invalid"
-  | "plan_deadline_exceeded";
+  | "plan_deadline_exceeded"
+  | "evidence_schema_invalid"
+  | "evidence_context_invalid";
 
 const PUBLIC_CODE: Record<PlanningFailureCode, ConstructorParameters<typeof ApplicationError>[0]> = {
   qwen_authentication_failed: "dependency_unavailable",
@@ -23,6 +25,8 @@ const PUBLIC_CODE: Record<PlanningFailureCode, ConstructorParameters<typeof Appl
   plan_schema_invalid: "internal_error",
   plan_context_invalid: "internal_error",
   plan_deadline_exceeded: "dependency_unavailable",
+  evidence_schema_invalid: "internal_error",
+  evidence_context_invalid: "internal_error",
 };
 
 export class PlanningError extends ApplicationError {

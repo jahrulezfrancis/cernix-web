@@ -1,0 +1,24 @@
+{
+  "taskKey": "task_readme",
+  "claimId": "33333333-3333-4333-8333-333333333333",
+  "candidates": [
+    {
+      "id": "cand_readme",
+      "obligationKeys": ["obl_readme"],
+      "evidenceType": "repository_structure",
+      "observation": "README.md is present at the repository root.",
+      "excerpts": [
+        {
+          "path": "README.md",
+          "lineStart": 1,
+          "lineEnd": 1,
+          "normalizedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "excerptText": "# Widget"
+        }
+      ],
+      "strength": "moderate"
+    }
+  ],
+  "gaps": [],
+  "counterevidence": []
+}

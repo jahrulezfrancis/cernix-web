@@ -49,7 +49,7 @@ export interface IdempotencyRecordsTable {
 export interface InvestigationJobsTable {
   id: string;
   investigation_id: string;
-  kind: "repository_snapshot" | "investigation_planning";
+  kind: "repository_snapshot" | "investigation_planning" | "investigation_evidence";
   status: "queued" | "leased" | "retry_wait" | "succeeded" | "failed" | "cancelled";
   attempt_count: Generated<number>;
   max_attempts: Generated<number>;
@@ -143,6 +143,72 @@ export interface ModelInvocationsTable {
   failure_code: string | null;
   created_at: Timestamp;
 }
+export interface EvidenceJobAttemptsTable {
+  id: Generated<string>;
+  job_id: string;
+  investigation_id: string;
+  attempt_number: number;
+  lease_token: string;
+  worker_owner: string;
+  status: "leased" | "succeeded" | "retry_scheduled" | "failed" | "lease_expired" | "cancelled";
+  started_at: Timestamp;
+  last_heartbeat_at: Timestamp;
+  finished_at: Timestamp | null;
+  failure_code: string | null;
+  next_available_at: Timestamp | null;
+}
+export interface EvidenceTaskRunsTable {
+  id: string;
+  task_id: string;
+  plan_id: string;
+  investigation_id: string;
+  claim_id: string;
+  task_key: string;
+  specialist_capability: string;
+  status: "queued" | "succeeded" | "failed" | "skipped_deferred";
+  failure_code: string | null;
+  canonical_result: ColumnType<Record<string, unknown> | null, string | null, string | null>;
+  created_at: Timestamp;
+  finished_at: Timestamp | null;
+}
+export interface EvidenceCandidatesTable {
+  id: string;
+  run_id: string;
+  investigation_id: string;
+  claim_id: string;
+  snapshot_id: string;
+  candidate_key: string;
+  evidence_type: string;
+  observation: string;
+  strength: "weak" | "moderate" | "strong";
+  manifest_hash_sha256: string;
+  commit_sha: string;
+  created_at: Timestamp;
+}
+export interface EvidenceExcerptsTable {
+  id: string;
+  candidate_id: string;
+  path: string;
+  line_start: number;
+  line_end: number;
+  normalized_sha256: string;
+  excerpt_text: string;
+}
+export interface EvidenceGapsTable {
+  id: string;
+  run_id: string;
+  gap_key: string;
+  description: string;
+  impact: "low" | "medium" | "high";
+}
+export interface CounterevidenceItemsTable {
+  id: string;
+  run_id: string;
+  counter_key: string;
+  related_candidate_key: string | null;
+  description: string;
+  severity: "minor" | "material" | "critical";
+}
 export interface RepositorySnapshotsTable {
   id: string; investigation_id: string; github_repository_id: string;
   canonical_owner: string; canonical_repository: string; canonical_url: string;
@@ -170,6 +236,12 @@ export interface Database {
   investigation_jobs: InvestigationJobsTable;
   snapshot_job_attempts: SnapshotJobAttemptsTable;
   planning_job_attempts: PlanningJobAttemptsTable;
+  evidence_job_attempts: EvidenceJobAttemptsTable;
+  evidence_task_runs: EvidenceTaskRunsTable;
+  evidence_candidates: EvidenceCandidatesTable;
+  evidence_excerpts: EvidenceExcerptsTable;
+  evidence_gaps: EvidenceGapsTable;
+  counterevidence_items: CounterevidenceItemsTable;
   investigation_plans: InvestigationPlansTable;
   verification_obligations: VerificationObligationsTable;
   evidence_tasks: EvidenceTasksTable;
