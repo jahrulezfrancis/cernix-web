@@ -1,9 +1,9 @@
-import { validateSkepticArtifact } from "@/lib/contracts/skeptic-challenge";
 import type { SkepticRepository, PersistedSkepticAnalysis } from "@/server/persistence/skeptic-repository";
 import { ApplicationError } from "@/server/errors";
 import type { QwenClient } from "./client";
 import type { QwenPlanningConfig } from "./config";
 import { PlanningError } from "./errors";
+import { buildSkepticArtifactFromProviderResponse } from "./skeptic-normalizer";
 import { parseSkepticContextConfig } from "@/server/skeptic/skeptic-config";
 import { buildSkepticSystemPrompt, buildSkepticUserPrompt, SKEPTIC_PROMPT_VERSION } from "./prompts/skeptic-v1";
 
@@ -25,6 +25,7 @@ export class InvestigationSkepticService {
       throw new PlanningError("skeptic_context_invalid");
     }
     const userPrompt = buildSkepticUserPrompt({
+      claimId: context.claim.id,
       claimStatement: context.claim.statement,
       preservedQualifiers: context.claim.preservedQualifiers,
       obligations: context.obligations,
@@ -50,20 +51,15 @@ export class InvestigationSkepticService {
     try { parsed = JSON.parse(content); } catch (error) { throw new PlanningError("qwen_malformed_response", error); }
     let artifact;
     try {
-      artifact = validateSkepticArtifact({
-        ...(parsed as object),
-        schemaVersion: 1,
+      artifact = buildSkepticArtifactFromProviderResponse({
+        parsed,
         investigationId,
+        claimId: context.claim.id,
         snapshotManifestHash: context.snapshot.manifestHashSha256,
         commitSha: context.snapshot.commitSha,
-        claimAnalyses: (parsed as { claimAnalyses?: unknown }).claimAnalyses ?? [{
-          claimId: context.claim.id,
-          provisionalVerdictHint: "insufficient",
-          confidenceFactors: [],
-          knownLimitations: [],
-        }],
       });
     } catch (error) {
+      if (error instanceof PlanningError) throw error;
       throw new PlanningError("skeptic_schema_invalid", error);
     }
     try {

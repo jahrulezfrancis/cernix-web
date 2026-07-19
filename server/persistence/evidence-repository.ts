@@ -53,6 +53,34 @@ export async function initializeTaskRunsForInvestigation(tx: Transaction<Databas
   }
 }
 
+export async function releaseBlockedEvidenceTaskRuns(db: Db, investigationId: string, clock: () => Date = () => new Date()): Promise<number> {
+  const runs = await db.selectFrom("evidence_task_runs").innerJoin("evidence_tasks", "evidence_tasks.id", "evidence_task_runs.task_id")
+    .select([
+      "evidence_task_runs.id as id",
+      "evidence_task_runs.task_key as task_key",
+      "evidence_task_runs.status as status",
+      "evidence_tasks.depends_on_task_ids as depends_on_task_ids",
+    ])
+    .where("evidence_task_runs.investigation_id", "=", investigationId)
+    .execute();
+  const statuses = new Map(runs.map((row) => [row.task_key, row.status as EvidenceTaskRunStatus]));
+  const now = clock();
+  let released = 0;
+  for (const row of runs) {
+    if (row.status !== "queued") continue;
+    const deps = parseJsonArray(row.depends_on_task_ids);
+    if (!deps.some((key) => statuses.get(key) === "failed")) continue;
+    const updated = await db.updateTable("evidence_task_runs").set({
+      status: "failed", failure_code: "dependency_failed", finished_at: now,
+    }).where("id", "=", row.id).where("status", "=", "queued").executeTakeFirst();
+    if (updated.numUpdatedRows === 1n) {
+      statuses.set(row.task_key, "failed");
+      released++;
+    }
+  }
+  return released;
+}
+
 export async function isEvidenceCollectionComplete(db: Db, investigationId: string): Promise<boolean> {
   const runs = await db.selectFrom("evidence_task_runs").select("status").where("investigation_id", "=", investigationId).execute();
   return runs.length > 0 && runs.every((run) => TERMINAL.has(run.status as EvidenceTaskRunStatus));
@@ -99,6 +127,7 @@ export class EvidenceRepository {
   async getNextRunnableTaskRun(rawInvestigationId: unknown): Promise<EvidenceTaskRun | null> {
     const investigationId = InvestigationIdSchema.parse(rawInvestigationId);
     try {
+      await releaseBlockedEvidenceTaskRuns(this.db, investigationId, this.clock);
       const runs = await this.db.selectFrom("evidence_task_runs").innerJoin("evidence_tasks", "evidence_tasks.id", "evidence_task_runs.task_id")
         .select([
           "evidence_task_runs.id as id", "evidence_task_runs.task_id as task_id", "evidence_task_runs.investigation_id as investigation_id",
