@@ -24,6 +24,10 @@
     "test": "vitest run --exclude '**/*.integration.test.ts' --exclude '**/*.live-smoke.test.ts'",
     "test:github-live": "vitest run --config vitest.live.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "worker:snapshot": "tsx server/worker/run-snapshot-worker.ts",
+    "worker:snapshot:once": "tsx server/worker/run-snapshot-worker.ts --once",
+    "worker:planning": "tsx server/worker/run-planning-worker.ts",
+    "worker:planning:once": "tsx server/worker/run-planning-worker.ts --once",
     "db:migrate": "tsx server/db/migrate-cli.ts up",
     "db:rollback": "tsx server/db/migrate-cli.ts down"
   },
@@ -57,6 +61,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-is": "^19.2.7",
+    "server-only": "^0.0.1",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.2",
     "zod": "^4.4.3"

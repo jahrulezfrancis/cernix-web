@@ -10,6 +10,7 @@ import type { Database } from "@/server/db/types";
 import { classifyDatabaseError } from "@/server/db/errors";
 import { PublicInvestigationEventSchema, type PublicInvestigationEvent } from "./events";
 import { boundEventLimit, hashCreateInput, hashStartInput, parseEventCursor, safeFailureCode } from "./helpers";
+import { readSnapshotJobMaxAttempts } from "@/server/worker/worker-config";
 
 type Db = Kysely<Database> | Transaction<Database>;
 type Clock = () => Date;
@@ -57,7 +58,12 @@ async function mapInvestigation(db: Db, id: string): Promise<InvestigationReadMo
 }
 
 export class InvestigationRepository {
-  constructor(private readonly db: Kysely<Database>, private readonly clock: Clock = () => new Date()) {}
+  constructor(private readonly db: Kysely<Database>, private readonly clock: Clock = () => new Date(),
+    private readonly snapshotJobMaxAttempts: number = readSnapshotJobMaxAttempts()) {
+    if (!Number.isInteger(snapshotJobMaxAttempts) || snapshotJobMaxAttempts < 1 || snapshotJobMaxAttempts > 10) {
+      throw new ApplicationError("malformed_input", {});
+    }
+  }
 
   async createInvestigation(raw: unknown, rawKey: unknown) {
     const input = CreateInvestigationRequestSchema.parse(raw);
@@ -143,7 +149,10 @@ export class InvestigationRepository {
           }).where("id", "=", id).execute();
           await tx.insertInto("investigation_jobs").values({
             id: randomUUID(), investigation_id: id, kind: "repository_snapshot", status: "queued",
-            available_at: now, lease_owner: null, lease_expires_at: null, created_at: now, updated_at: now,
+            max_attempts: this.snapshotJobMaxAttempts,
+            available_at: now, lease_owner: null, lease_token: null, lease_expires_at: null,
+            last_heartbeat_at: null, started_at: null, completed_at: null, failed_at: null,
+            failure_code: null, created_at: now, updated_at: now,
           }).execute();
           await appendEvent(tx, id, {
             type: "investigation_started", stage: "snapshotting", payload: { jobKind: "repository_snapshot" },

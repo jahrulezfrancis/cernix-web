@@ -59,10 +59,10 @@ describe.sequential("PostgreSQL investigation persistence", () => {
     expect(new Set(tables.rows.map((row) => row.table_name)).size).toBe(5);
     const indexes = await sql<{ indexname: string }>`
       select indexname from pg_indexes where schemaname = 'public'
-        and indexname in ('investigation_events_cursor_idx','investigation_jobs_initial_snapshot_idx')
+        and indexname in ('investigation_events_cursor_idx','investigation_jobs_active_snapshot_idx','investigation_jobs_claim_idx')
     `.execute(db);
     expect(new Set(indexes.rows.map((row) => row.indexname))).toEqual(new Set([
-      "investigation_events_cursor_idx", "investigation_jobs_initial_snapshot_idx",
+      "investigation_events_cursor_idx", "investigation_jobs_active_snapshot_idx", "investigation_jobs_claim_idx",
     ]));
     const created = await repository.createInvestigation(createInput, randomUUID());
     await expect(sql`update investigations set status = 'submitted' where id = ${created.id}`.execute(db)).rejects.toBeTruthy();
@@ -216,10 +216,17 @@ describe.sequential("PostgreSQL investigation persistence", () => {
       "investigation_jobs.investigation_id": "uuid|NO||NO",
       "investigation_jobs.kind": "text|NO||NO",
       "investigation_jobs.status": "text|NO||NO",
-      "investigation_jobs.attempt": "integer|NO|0|NO",
+      "investigation_jobs.attempt_count": "integer|NO|0|NO",
+      "investigation_jobs.max_attempts": "integer|NO|4|NO",
       "investigation_jobs.available_at": "timestamp with time zone|NO||NO",
       "investigation_jobs.lease_owner": "text|YES||NO",
+      "investigation_jobs.lease_token": "uuid|YES||NO",
       "investigation_jobs.lease_expires_at": "timestamp with time zone|YES||NO",
+      "investigation_jobs.last_heartbeat_at": "timestamp with time zone|YES||NO",
+      "investigation_jobs.started_at": "timestamp with time zone|YES||NO",
+      "investigation_jobs.completed_at": "timestamp with time zone|YES||NO",
+      "investigation_jobs.failed_at": "timestamp with time zone|YES||NO",
+      "investigation_jobs.failure_code": "text|YES||NO",
       "investigation_jobs.created_at": "timestamp with time zone|NO||NO",
       "investigation_jobs.updated_at": "timestamp with time zone|NO||NO",
       "investigations.id": "uuid|NO||NO",
@@ -255,8 +262,10 @@ describe.sequential("PostgreSQL investigation persistence", () => {
       "idempotency_records_request_hash_sha256_check", "idempotency_records_result_kind_check",
       "idempotency_records_scope_check", "idempotency_records_scope_result_check",
       "investigation_events_public_payload_check", "investigation_events_stage_check", "investigation_events_type_check",
-      "investigation_jobs_attempt_check", "investigation_jobs_kind_check", "investigation_jobs_queued_lease_check",
-      "investigation_jobs_status_check", "investigations_completion_coherence_check",
+      "investigation_jobs_attempt_count_check", "investigation_jobs_failure_code_check", "investigation_jobs_kind_check",
+      "investigation_jobs_lease_owner_check", "investigation_jobs_max_attempts_check",
+      "investigation_jobs_state_coherence_check", "investigation_jobs_status_check", "investigation_jobs_timestamp_check",
+      "investigations_completion_coherence_check",
       "investigations_failure_code_check", "investigations_failure_coherence_check",
       "investigations_repository_canonical_url_check", "investigations_repository_name_check",
       "investigations_repository_owner_check", "investigations_requested_ref_check",
@@ -270,18 +279,20 @@ describe.sequential("PostgreSQL investigation persistence", () => {
     expect(constraints.rows.filter((row) => row.contype === "p").map((row) => row.relname).sort()).toEqual([
       "idempotency_records", "investigation_events", "investigation_jobs", "investigations", "manual_claims",
     ]);
-    expect(constraints.rows.filter((row) => row.contype === "u").map((row) => row.conname)).toEqual([
-      "manual_claims_investigation_id_key",
+    expect(constraints.rows.filter((row) => row.contype === "u").map((row) => row.conname).sort()).toEqual([
+      "investigation_jobs_id_investigation_unique", "manual_claims_investigation_id_key",
     ]);
     const indexes = await sql<{ indexname: string; indexdef: string }>`
       select indexname, indexdef from pg_indexes where schemaname='public'
-        and indexname in ('investigation_events_cursor_idx','investigation_jobs_initial_snapshot_idx')
+        and indexname in ('investigation_events_cursor_idx','investigation_jobs_active_snapshot_idx','investigation_jobs_claim_idx')
       order by indexname
     `.execute(db);
     expect(indexes.rows[0]).toMatchObject({ indexname: "investigation_events_cursor_idx" });
     expect(indexes.rows[0].indexdef).toContain("(investigation_id, sequence)");
-    expect(indexes.rows[1]).toMatchObject({ indexname: "investigation_jobs_initial_snapshot_idx" });
-    expect(indexes.rows[1].indexdef).toContain("WHERE ((kind = 'repository_snapshot'::text) AND (status = 'queued'::text))");
+    expect(indexes.rows[1]).toMatchObject({ indexname: "investigation_jobs_active_snapshot_idx" });
+    expect(indexes.rows[1].indexdef).toContain("status = ANY");
+    expect(indexes.rows[2]).toMatchObject({ indexname: "investigation_jobs_claim_idx" });
+    expect(indexes.rows[2].indexdef).toContain("(available_at, created_at, id)");
   });
 
   it("rejects every bounded-field and lifecycle-coherence violation directly", async () => {

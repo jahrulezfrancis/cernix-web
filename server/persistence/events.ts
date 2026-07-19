@@ -13,8 +13,8 @@ const ClaimEventSchema = z.strictObject({
   payload: z.strictObject({ qualifierCount: z.number().int().min(0).max(20) }),
 });
 const StartedEventSchema = z.strictObject({
-  type: z.literal("investigation_started"), stage: z.literal("snapshotting"),
-  payload: z.strictObject({ jobKind: z.literal("repository_snapshot") }),
+  type: z.literal("investigation_started"), stage: z.enum(["snapshotting", "planning"]),
+  payload: z.strictObject({ jobKind: z.enum(["repository_snapshot", "investigation_planning"]) }),
 });
 const SnapshotPersistedEventSchema = z.strictObject({
   type: z.literal("repository_snapshot_persisted"), stage: z.literal("snapshotting"),
@@ -25,6 +25,17 @@ const SnapshotPersistedEventSchema = z.strictObject({
     admittedFileCount: z.number().int().min(0).max(5_000),
     excludedEntryCount: z.number().int().min(0).max(50_000),
     totalAdmittedBytes: z.string().regex(/^(?:0|[1-9]\d{0,8})$/),
+  }),
+});
+const PlanPersistedEventSchema = z.strictObject({
+  type: z.literal("investigation_plan_persisted"), stage: z.literal("planning"),
+  payload: z.strictObject({
+    planId: z.uuid(),
+    obligationCount: z.number().int().min(1).max(100),
+    taskCount: z.number().int().min(1).max(150),
+    schemaVersion: z.literal(1),
+    modelId: z.string().min(1).max(128),
+    promptVersion: z.string().min(1).max(64),
   }),
 });
 const LifecycleEventSchema = z.strictObject({
@@ -38,6 +49,7 @@ const LifecycleEventSchema = z.strictObject({
 });
 
 export const PublicInvestigationEventSchema = z.union([
-  CreatedEventSchema, ClaimEventSchema, StartedEventSchema, SnapshotPersistedEventSchema, LifecycleEventSchema,
+  CreatedEventSchema, ClaimEventSchema, StartedEventSchema, SnapshotPersistedEventSchema,
+  PlanPersistedEventSchema, LifecycleEventSchema,
 ]);
 export type PublicInvestigationEvent = z.infer<typeof PublicInvestigationEventSchema>;

@@ -116,7 +116,7 @@ export function validatePersistedSnapshot(snapshot: PersistedRepositorySnapshot,
   return snapshot;
 }
 
-async function loadSnapshot(db: Kysely<Database> | Transaction<Database>, investigationId: string): Promise<PersistedRepositorySnapshot | null> {
+export async function loadPersistedSnapshot(db: Kysely<Database> | Transaction<Database>, investigationId: string): Promise<PersistedRepositorySnapshot | null> {
   const snapshot = await db.selectFrom("repository_snapshots").selectAll().where("investigation_id", "=", investigationId).executeTakeFirst();
   if (!snapshot) return null;
   const rows = await db.selectFrom("repository_snapshot_entries")
@@ -169,7 +169,7 @@ export class RepositorySnapshotRepository {
 
   async findByInvestigation(rawId: unknown): Promise<PersistedRepositorySnapshot | null> {
     const id = InvestigationIdSchema.parse(rawId);
-    try { return await loadSnapshot(this.db, id); }
+    try { return await loadPersistedSnapshot(this.db, id); }
     catch (error) { throw classifyDatabaseError(error); }
   }
 
@@ -180,7 +180,7 @@ export class RepositorySnapshotRepository {
         const investigation = await tx.selectFrom("investigations").select(["id", "status"])
           .where("id", "=", investigationId).forUpdate().executeTakeFirst();
         if (!investigation) throw new ApplicationError("not_found", {});
-        const existing = await loadSnapshot(tx, investigationId);
+        const existing = await loadPersistedSnapshot(tx, investigationId);
         if (existing) return existing;
         if (investigation.status !== "snapshotting") throw new ApplicationError("invalid_lifecycle_transition", {});
         const now = this.clock(), snapshotId = this.id();
@@ -225,7 +225,7 @@ export class RepositorySnapshotRepository {
           investigation_id: investigationId, type: event.type, stage: event.stage,
           public_payload: JSON.stringify(event.payload), created_at: now,
         }).execute();
-        const created = await loadSnapshot(tx, investigationId);
+        const created = await loadPersistedSnapshot(tx, investigationId);
         if (!created) throw new ApplicationError("internal_error", {});
         return created;
       });

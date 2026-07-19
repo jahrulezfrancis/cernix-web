@@ -49,14 +49,99 @@ export interface IdempotencyRecordsTable {
 export interface InvestigationJobsTable {
   id: string;
   investigation_id: string;
-  kind: "repository_snapshot";
-  status: "queued";
-  attempt: Generated<number>;
+  kind: "repository_snapshot" | "investigation_planning";
+  status: "queued" | "leased" | "retry_wait" | "succeeded" | "failed" | "cancelled";
+  attempt_count: Generated<number>;
+  max_attempts: Generated<number>;
   available_at: Timestamp;
   lease_owner: string | null;
+  lease_token: string | null;
   lease_expires_at: Timestamp | null;
+  last_heartbeat_at: Timestamp | null;
+  started_at: Timestamp | null;
+  completed_at: Timestamp | null;
+  failed_at: Timestamp | null;
+  failure_code: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
+}
+export interface SnapshotJobAttemptsTable {
+  id: Generated<string>;
+  job_id: string;
+  investigation_id: string;
+  attempt_number: number;
+  lease_token: string;
+  worker_owner: string;
+  status: "leased" | "succeeded" | "retry_scheduled" | "failed" | "lease_expired" | "cancelled";
+  started_at: Timestamp;
+  last_heartbeat_at: Timestamp;
+  finished_at: Timestamp | null;
+  failure_code: string | null;
+  next_available_at: Timestamp | null;
+}
+export interface PlanningJobAttemptsTable {
+  id: Generated<string>;
+  job_id: string;
+  investigation_id: string;
+  attempt_number: number;
+  lease_token: string;
+  worker_owner: string;
+  status: "leased" | "succeeded" | "retry_scheduled" | "failed" | "lease_expired" | "cancelled";
+  started_at: Timestamp;
+  last_heartbeat_at: Timestamp;
+  finished_at: Timestamp | null;
+  failure_code: string | null;
+  next_available_at: Timestamp | null;
+}
+export interface InvestigationPlansTable {
+  id: string;
+  investigation_id: string;
+  snapshot_id: string;
+  manifest_hash_sha256: string;
+  commit_sha: string;
+  schema_version: number;
+  model_id: string;
+  prompt_version: string;
+  canonical_plan: ColumnType<Record<string, unknown>, string, string>;
+  obligation_count: number;
+  task_count: number;
+  created_at: Timestamp;
+}
+export interface VerificationObligationsTable {
+  id: string;
+  plan_id: string;
+  claim_id: string;
+  obligation_key: string;
+  description: string;
+  taxonomy: string | null;
+  priority: number;
+}
+export interface EvidenceTasksTable {
+  id: string;
+  plan_id: string;
+  claim_id: string;
+  task_key: string;
+  specialist_capability: string;
+  expected_evidence_types: ColumnType<string[], string, string>;
+  query_terms: ColumnType<string[], string, string>;
+  priority: number;
+  depends_on_task_ids: ColumnType<string[], string, string>;
+}
+export interface EvidenceTaskObligationsTable {
+  task_id: string;
+  obligation_id: string;
+}
+export interface ModelInvocationsTable {
+  id: Generated<string>;
+  plan_id: string | null;
+  attempt_id: string | null;
+  model_id: string;
+  prompt_version: string;
+  input_token_estimate: number | null;
+  output_token_estimate: number | null;
+  status: "succeeded" | "failed";
+  failure_code: string | null;
+  created_at: Timestamp;
 }
 export interface RepositorySnapshotsTable {
   id: string; investigation_id: string; github_repository_id: string;
@@ -83,6 +168,13 @@ export interface Database {
   investigation_events: InvestigationEventsTable;
   idempotency_records: IdempotencyRecordsTable;
   investigation_jobs: InvestigationJobsTable;
+  snapshot_job_attempts: SnapshotJobAttemptsTable;
+  planning_job_attempts: PlanningJobAttemptsTable;
+  investigation_plans: InvestigationPlansTable;
+  verification_obligations: VerificationObligationsTable;
+  evidence_tasks: EvidenceTasksTable;
+  evidence_task_obligations: EvidenceTaskObligationsTable;
+  model_invocations: ModelInvocationsTable;
   repository_snapshots: RepositorySnapshotsTable;
   repository_snapshot_entries: RepositorySnapshotEntriesTable;
   repository_snapshot_files: RepositorySnapshotFilesTable;

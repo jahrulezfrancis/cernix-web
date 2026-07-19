@@ -29,7 +29,7 @@ function fakeHarness(options: {
   const admin = { query, end } as unknown as AdminPool;
   const createAdminPool = vi.fn((_config: TestDatabasePoolConfig) => admin);
   const createChildDatabase = vi.fn((_config: PoolConfig) => ({
-    db: { destroy } as unknown as DatabaseInstance["db"], pool: {} as DatabaseInstance["pool"],
+    db: { destroy } as unknown as DatabaseInstance["db"], pool: { on: vi.fn() } as unknown as DatabaseInstance["pool"],
   }));
   return { destroy, query, end, createAdminPool, createChildDatabase };
 }

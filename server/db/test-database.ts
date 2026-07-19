@@ -61,6 +61,9 @@ export async function createDisposableTestDatabase(options: {
   async function performCleanup(): Promise<void> {
     const failures: unknown[] = [];
     if (child) {
+      // Child deletion intentionally terminates any straggling idle client. Prevent
+      // node-postgres from re-emitting that expected teardown signal as uncaught.
+      child.pool.on("error", () => {});
       try { await child.db.destroy(); } catch (error) { failures.push(error); }
     }
     if (name) {
