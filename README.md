@@ -207,8 +207,26 @@ npm run worker:judge:once
 
 Qwen settings are server-only. Opt-in live provider smoke is available through
 `npm run test:github-live` for GitHub and the Qwen live-smoke test when
-`CERNIX_QWEN_LIVE_SMOKE=1` is set with a valid `QWEN_API_KEY`. Public API exposure
-and frontend cutover remain deferred.
+`CERNIX_QWEN_LIVE_SMOKE=1` is set with a valid `QWEN_API_KEY`.
+
+## Public investigations API
+
+The Next.js app exposes versioned investigation routes under `/api/v1/investigations`.
+Mutations require an `Idempotency-Key` header containing a UUID.
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/v1/investigations` | Create investigation + manual claim |
+| `GET` | `/api/v1/investigations` | List persisted investigations |
+| `GET` | `/api/v1/investigations/:id` | Read investigation |
+| `PATCH` | `/api/v1/investigations/:id/claims` | Approve or edit claim |
+| `POST` | `/api/v1/investigations/:id/start` | Start snapshotting (idempotent) |
+| `GET` | `/api/v1/investigations/:id/events` | Cursor-paginated lifecycle events |
+| `GET` | `/api/v1/investigations/:id/report` | Read durable judge report |
+
+The frontend investigation flow uses these routes for UUID-backed investigations.
+Labelled dashboard demos remain isolated in `lib/mock-data.ts` and are not merged into
+PostgreSQL records automatically.
 
 ## Immutable public GitHub snapshots
 
