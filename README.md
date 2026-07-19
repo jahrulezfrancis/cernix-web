@@ -180,10 +180,35 @@ npm run worker:skeptic:once
 | `CERNIX_SKEPTIC_MAX_CONTEXT_BYTES` | 48,000 | 4,096–256,000 |
 | `CERNIX_MAX_REINVESTIGATION_CYCLES` | 1 | 0–10 |
 
+## Judge and durable evidence reports
+
+The judge worker claims `investigation_judge` jobs while an investigation is in
+`judging`. It reviews persisted evidence, skeptic challenges, and obligations, then
+persists an immutable report artifact with per-claim verdicts, limitations, and
+maintainer actions. Successful completion advances the investigation to
+`completed` or `completed_with_limitations`.
+
+Run the judge worker separately:
+
+```bash
+npm run worker:judge
+npm run worker:judge:once
+```
+
+| Setting | Default | Range |
+|---|---:|---:|
+| `CERNIX_JUDGE_LEASE_SECONDS` | 180 | 30–900 |
+| `CERNIX_JUDGE_HEARTBEAT_SECONDS` | 45 | 1–449 and less than half the lease |
+| `CERNIX_JUDGE_POLL_MS` | 1,000 | 250–30,000 |
+| `CERNIX_JUDGE_MAX_ATTEMPTS` | 4 | 1–10 |
+| `CERNIX_JUDGE_RETRY_BASE_SECONDS` | 5 | 1–300 |
+| `CERNIX_JUDGE_RETRY_MAX_SECONDS` | 300 | 1–3,600 and at least the base |
+| `CERNIX_JUDGE_MAX_CONTEXT_BYTES` | 64,000 | 4,096–256,000 |
+
 Qwen settings are server-only. Opt-in live provider smoke is available through
 `npm run test:github-live` for GitHub and the Qwen live-smoke test when
-`CERNIX_QWEN_LIVE_SMOKE=1` is set with a valid `QWEN_API_KEY`. Public API exposure,
-frontend cutover, and judge stages remain deferred.
+`CERNIX_QWEN_LIVE_SMOKE=1` is set with a valid `QWEN_API_KEY`. Public API exposure
+and frontend cutover remain deferred.
 
 ## Immutable public GitHub snapshots
 

@@ -13,8 +13,8 @@ const ClaimEventSchema = z.strictObject({
   payload: z.strictObject({ qualifierCount: z.number().int().min(0).max(20) }),
 });
 const StartedEventSchema = z.strictObject({
-  type: z.literal("investigation_started"), stage: z.enum(["snapshotting", "planning", "investigating", "challenging", "reinvestigating"]),
-  payload: z.strictObject({ jobKind: z.enum(["repository_snapshot", "investigation_planning", "investigation_evidence", "investigation_skeptic"]) }),
+  type: z.literal("investigation_started"), stage: z.enum(["snapshotting", "planning", "investigating", "challenging", "reinvestigating", "judging"]),
+  payload: z.strictObject({ jobKind: z.enum(["repository_snapshot", "investigation_planning", "investigation_evidence", "investigation_skeptic", "investigation_judge"]) }),
 });
 const SnapshotPersistedEventSchema = z.strictObject({
   type: z.literal("repository_snapshot_persisted"), stage: z.literal("snapshotting"),
@@ -66,6 +66,18 @@ const ReinvestigationStartedEventSchema = z.strictObject({
     taskKeys: z.array(z.string().min(1).max(64)).min(1).max(20),
   }),
 });
+const InvestigationReportPersistedEventSchema = z.strictObject({
+  type: z.literal("investigation_report_persisted"), stage: z.enum(["completed", "completed_with_limitations"]),
+  payload: z.strictObject({
+    reportId: z.uuid(),
+    completionDisposition: z.enum(["completed", "completed_with_limitations"]),
+    judgmentCount: z.number().int().min(1).max(10),
+    schemaVersion: z.literal(1),
+    modelId: z.string().min(1).max(128),
+    promptVersion: z.string().min(1).max(64),
+    artifactHashSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
+});
 const LifecycleEventSchema = z.strictObject({
   type: z.literal("lifecycle_transitioned"), stage: BackendLifecycleStatusSchema,
   payload: z.strictObject({ from: BackendLifecycleStatusSchema, to: BackendLifecycleStatusSchema }),
@@ -79,6 +91,6 @@ const LifecycleEventSchema = z.strictObject({
 export const PublicInvestigationEventSchema = z.union([
   CreatedEventSchema, ClaimEventSchema, StartedEventSchema, SnapshotPersistedEventSchema,
   PlanPersistedEventSchema, EvidenceTaskCompletedEventSchema, SkepticAnalysisPersistedEventSchema,
-  ReinvestigationStartedEventSchema, LifecycleEventSchema,
+  ReinvestigationStartedEventSchema, InvestigationReportPersistedEventSchema, LifecycleEventSchema,
 ]);
 export type PublicInvestigationEvent = z.infer<typeof PublicInvestigationEventSchema>;

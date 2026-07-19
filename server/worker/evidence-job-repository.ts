@@ -7,6 +7,7 @@ import { ApplicationError } from "@/server/errors";
 import { isEvidenceCollectionComplete } from "@/server/persistence/evidence-repository";
 import { PublicInvestigationEventSchema } from "@/server/persistence/events";
 import { enqueueSkepticJob } from "./skeptic-job-repository";
+import { enqueueJudgeJob } from "./judge-job-repository";
 
 export type EvidenceJobStatus = InvestigationJobsTable["status"];
 export type EvidenceJobClaim = Readonly<{
@@ -47,6 +48,7 @@ async function advanceEvidenceComplete(tx: Transaction<Database>, investigation:
   }
   if (investigation.status === "reinvestigating") {
     await transitionInvestigation(tx, investigation, "judging", now);
+    await enqueueJudgeJob(tx, investigation.id, now, uuid);
   }
 }
 

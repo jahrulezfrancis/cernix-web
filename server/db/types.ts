@@ -50,7 +50,7 @@ export interface IdempotencyRecordsTable {
 export interface InvestigationJobsTable {
   id: string;
   investigation_id: string;
-  kind: "repository_snapshot" | "investigation_planning" | "investigation_evidence" | "investigation_skeptic";
+  kind: "repository_snapshot" | "investigation_planning" | "investigation_evidence" | "investigation_skeptic" | "investigation_judge";
   status: "queued" | "leased" | "retry_wait" | "succeeded" | "failed" | "cancelled";
   attempt_count: Generated<number>;
   max_attempts: Generated<number>;
@@ -263,6 +263,74 @@ export interface ChallengeResolutionsTable {
   resolution_note: string;
   created_at: Timestamp;
 }
+export interface JudgeJobAttemptsTable {
+  id: Generated<string>;
+  job_id: string;
+  investigation_id: string;
+  attempt_number: number;
+  lease_token: string;
+  worker_owner: string;
+  status: "leased" | "succeeded" | "retry_scheduled" | "failed" | "lease_expired" | "cancelled";
+  started_at: Timestamp;
+  last_heartbeat_at: Timestamp;
+  finished_at: Timestamp | null;
+  failure_code: string | null;
+  next_available_at: Timestamp | null;
+}
+export interface InvestigationReportsTable {
+  id: string;
+  investigation_id: string;
+  plan_id: string;
+  snapshot_id: string;
+  skeptic_analysis_id: string;
+  claim_id: string;
+  manifest_hash_sha256: string;
+  commit_sha: string;
+  schema_version: number;
+  model_id: string;
+  prompt_version: string;
+  completion_disposition: "completed" | "completed_with_limitations";
+  report_summary: string;
+  artifact_hash_sha256: string;
+  canonical_artifact: ColumnType<Record<string, unknown>, string, string>;
+  judgment_count: number;
+  created_at: Timestamp;
+}
+export interface ClaimJudgmentsTable {
+  id: string;
+  report_id: string;
+  investigation_id: string;
+  claim_id: string;
+  judgment_key: string;
+  verdict: "verified" | "partially_verified" | "unverified";
+  confidence: "high" | "moderate" | "low";
+  summary: string;
+  reasoning: string;
+  confidence_factors: ColumnType<string[], string, string>;
+  unproven_aspects: ColumnType<string[], string, string>;
+  what_could_change_verdict: ColumnType<string[], string, string>;
+  created_at: Timestamp;
+}
+export interface ReportLimitationsTable {
+  id: string;
+  report_id: string;
+  investigation_id: string;
+  claim_id: string;
+  limitation_key: string;
+  description: string;
+  impact: "low" | "medium" | "high";
+  created_at: Timestamp;
+}
+export interface MaintainerActionsTable {
+  id: string;
+  report_id: string;
+  investigation_id: string;
+  claim_id: string;
+  action_key: string;
+  action_text: string;
+  priority: "low" | "medium" | "high";
+  created_at: Timestamp;
+}
 export interface RepositorySnapshotsTable {
   id: string; investigation_id: string; github_repository_id: string;
   canonical_owner: string; canonical_repository: string; canonical_url: string;
@@ -300,6 +368,11 @@ export interface Database {
   skeptic_analyses: SkepticAnalysesTable;
   skeptic_challenges: SkepticChallengesTable;
   challenge_resolutions: ChallengeResolutionsTable;
+  judge_job_attempts: JudgeJobAttemptsTable;
+  investigation_reports: InvestigationReportsTable;
+  claim_judgments: ClaimJudgmentsTable;
+  report_limitations: ReportLimitationsTable;
+  maintainer_actions: MaintainerActionsTable;
   investigation_plans: InvestigationPlansTable;
   verification_obligations: VerificationObligationsTable;
   evidence_tasks: EvidenceTasksTable;
