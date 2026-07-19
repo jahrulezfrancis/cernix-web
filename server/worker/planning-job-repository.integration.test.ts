@@ -20,7 +20,8 @@ const input = { repositoryUrl: "https://github.com/Acme/Widget", claim: { statem
 const approval = { statement: "A safe claim.", preservedQualifiers: [], approved: true as const };
 
 async function truncate() {
-  await sql`truncate model_invocations, evidence_task_obligations, evidence_tasks, verification_obligations,
+  await sql`truncate counterevidence_items, evidence_gaps, evidence_excerpts, evidence_candidates, evidence_task_runs,
+    evidence_job_attempts, model_invocations, evidence_task_obligations, evidence_tasks, verification_obligations,
     investigation_plans, planning_job_attempts, snapshot_job_attempts, repository_snapshot_files,
     repository_snapshot_entries, repository_snapshots, investigation_jobs, idempotency_records,
     investigation_events, manual_claims, investigations restart identity cascade`.execute(db);
@@ -195,6 +196,11 @@ describe.sequential("durable planning job orchestration", () => {
     await expect(worker.runOnce(new AbortController().signal)).resolves.toMatchObject({ status: "succeeded" });
     expect(calls).toBe(0);
     expect((await investigations.getInvestigation(investigation.id)).status).toBe("investigating");
+    const evidenceJob = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", investigation.id)
+      .where("kind", "=", "investigation_evidence").executeTakeFirst();
+    expect(evidenceJob).toMatchObject({ status: "queued" });
+    const runs = await db.selectFrom("evidence_task_runs").selectAll().where("investigation_id", "=", investigation.id).execute();
+    expect(runs).toHaveLength(1);
   });
 
   it("retries without lifecycle movement and terminally fails planning investigations", async () => {

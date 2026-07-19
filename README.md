@@ -121,10 +121,43 @@ Planning worker configuration mirrors the snapshot worker pattern:
 | `CERNIX_PLANNING_RETRY_BASE_SECONDS` | 5 | 1–300 |
 | `CERNIX_PLANNING_RETRY_MAX_SECONDS` | 300 | 1–3,600 and at least the base |
 
+Successful planning now also enqueues one durable `investigation_evidence` job and
+initializes per-task evidence runs. Non-`repository_investigator` tasks are marked
+`skipped_deferred` in Milestone 8.
+
+## Evidence collection worker
+
+The evidence worker claims `investigation_evidence` jobs while an investigation is in
+`investigating`. It processes evidence task runs sequentially inside the lease,
+retrieves bounded excerpts from the persisted snapshot, and calls the repository
+investigator adapter. Successful completion of every task run moves
+`investigating` to `challenging`.
+
+Run the evidence worker separately:
+
+```bash
+npm run worker:evidence
+npm run worker:evidence:once
+```
+
+| Setting | Default | Range |
+|---|---:|---:|
+| `CERNIX_EVIDENCE_LEASE_SECONDS` | 180 | 30–900 |
+| `CERNIX_EVIDENCE_HEARTBEAT_SECONDS` | 45 | 1–449 and less than half the lease |
+| `CERNIX_EVIDENCE_POLL_MS` | 1,000 | 250–30,000 |
+| `CERNIX_EVIDENCE_MAX_ATTEMPTS` | 4 | 1–10 |
+| `CERNIX_EVIDENCE_RETRY_BASE_SECONDS` | 5 | 1–300 |
+| `CERNIX_EVIDENCE_RETRY_MAX_SECONDS` | 300 | 1–3,600 and at least the base |
+| `CERNIX_EVIDENCE_MAX_EXCERPTS` | 12 | 1–50 |
+| `CERNIX_EVIDENCE_MAX_MATCHES_PER_TERM` | 4 | 1–50 |
+| `CERNIX_EVIDENCE_EXCERPT_CONTEXT_LINES` | 3 | 0–20 |
+| `CERNIX_EVIDENCE_MAX_EXCERPT_BYTES` | 2,048 | 256–16,384 |
+| `CERNIX_EVIDENCE_MAX_CONTEXT_BYTES` | 65,536 | 4,096–262,144 |
+
 Qwen settings are server-only. Opt-in live provider smoke is available through
 `npm run test:github-live` for GitHub and the Qwen live-smoke test when
 `CERNIX_QWEN_LIVE_SMOKE=1` is set with a valid `QWEN_API_KEY`. Public API exposure,
-frontend cutover, and evidence retrieval remain deferred.
+frontend cutover, and skeptic/judge stages remain deferred.
 
 ## Immutable public GitHub snapshots
 
