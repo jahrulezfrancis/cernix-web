@@ -38,7 +38,7 @@ describe("database error classification", () => {
   it("rejects an invalid cursor before attempting any database query", async () => {
     const inaccessibleDatabase = {} as Kysely<Database>;
     const repository = new InvestigationRepository(inaccessibleDatabase);
-    await expect(repository.getEvents("8c8bc9ee-7c3e-4e2d-8f3e-a2ed0b7e1157", "01"))
+    await expect(repository.getEvents("8c8bc9ee-7c3e-4e2d-8f3e-a2ed0b7e1157", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "01"))
       .rejects.toMatchObject({ code: "malformed_input" });
   });
 });

@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { getSession, logout } from "@/lib/api/auth-client";
+import type { SessionUser } from "@/lib/contracts/auth-api";
 import {
   FileSearch,
   PlusCircle,
@@ -50,8 +52,27 @@ interface AppShellProps {
 
 export function AppShell({ children, investigation, title, lockScroll = false }: AppShellProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getSession()
+      .then((session) => {
+        if (!cancelled && session.authenticated) setSessionUser(session.user);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleLogout() {
+    await logout();
+    router.push("/login");
+  }
 
   const investigationNav = investigation
     ? getInvestigationNav(investigation.id)
@@ -154,17 +175,26 @@ export function AppShell({ children, investigation, title, lockScroll = false }:
         )}
       </nav>
 
-      {/* User menu placeholder */}
+      {/* User menu */}
       <div className={cn("border-t border-[#1E4560] p-2")}>
         <button
+          type="button"
+          onClick={() => void handleLogout()}
           className={cn(
             "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm text-[#86ADC2] transition-colors hover:bg-[#1E4560]/50 hover:text-[#E9F3F8]",
             collapsed && "justify-center"
           )}
-          aria-label="User menu"
+          aria-label={sessionUser ? `Sign out ${sessionUser.login}` : "Account"}
         >
-          <User className="h-4 w-4 shrink-0" aria-hidden />
-          {!collapsed && <span>Account</span>}
+          {sessionUser?.avatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={sessionUser.avatarUrl} alt="" className="h-4 w-4 shrink-0 rounded-full" />
+          ) : (
+            <User className="h-4 w-4 shrink-0" aria-hidden />
+          )}
+          {!collapsed && (
+            <span className="truncate">{sessionUser?.login ?? "Account"}</span>
+          )}
         </button>
       </div>
     </div>

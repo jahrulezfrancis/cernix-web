@@ -7,6 +7,7 @@ import { validateSkepticArtifact } from "@/lib/contracts/skeptic-challenge";
 import type { Database } from "@/server/db/types";
 import { createDisposableTestDatabase } from "@/server/db/test-database";
 import { migrateToLatest } from "@/server/db/migrate";
+import { TEST_OWNER_USER_ID, seedTestOwner } from "@/server/auth/test-fixtures";
 import { InvestigationRepository } from "@/server/persistence/investigation-repository";
 import { InvestigationPlanRepository } from "@/server/persistence/investigation-plan-repository";
 import { RepositorySnapshotRepository } from "@/server/persistence/repository-snapshot-repository";
@@ -66,9 +67,9 @@ function planArtifact(investigationId: string, claimId: string) {
   };
 }
 async function atChallenging() {
-  const created = await investigations.createInvestigation(input, randomUUID());
-  await investigations.approveClaim(created.id, approval);
-  const investigation = await investigations.startInvestigation(created.id, randomUUID());
+  const created = await investigations.createInvestigation(input, randomUUID(), TEST_OWNER_USER_ID);
+  await investigations.approveClaim(created.id, approval, TEST_OWNER_USER_ID);
+  const investigation = await investigations.startInvestigation(created.id, randomUUID(), TEST_OWNER_USER_ID);
   const snapshotJob = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", created.id)
     .where("kind", "=", "repository_snapshot").executeTakeFirstOrThrow();
   await new RepositorySnapshotRepository(db).createForInvestigation(created.id, artifact());
@@ -139,7 +140,11 @@ beforeAll(async () => {
   judgmentRepository = new JudgmentRepository(db);
   await migrateToLatest(db);
 });
-beforeEach(truncate);
+beforeEach(async () => {
+  await migrateToLatest(db);
+  await truncate();
+  await seedTestOwner(db);
+});
 afterAll(async () => { await harness?.cleanup(); });
 
 describe.sequential("durable judge job orchestration", () => {
@@ -157,7 +162,7 @@ describe.sequential("durable judge job orchestration", () => {
 
   it("enqueues judge jobs when skeptic routing enters judging", async () => {
     const { investigation, judgeJob } = await atJudging();
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("judging");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("judging");
     expect(judgeJob.status).toBe("queued");
     const started = await db.selectFrom("investigation_events").selectAll().where("investigation_id", "=", investigation.id)
       .where("type", "=", "investigation_started").where("stage", "=", "judging").execute();
@@ -185,7 +190,7 @@ describe.sequential("durable judge job orchestration", () => {
       modelId: "qwen-plus", promptVersion: "skeptic-v1", attemptId: claimed.claim.attemptId,
     });
     expect(await skepticJobs.completeSuccess(skepticJob.id, claimed.claim.leaseToken)).toEqual({ kind: "updated", status: "succeeded" });
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("reinvestigating");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("reinvestigating");
     const now = new Date();
     await db.updateTable("evidence_task_runs").set({
       status: "succeeded", finished_at: now,
@@ -198,7 +203,7 @@ describe.sequential("durable judge job orchestration", () => {
     }).execute();
     const evidenceClaim = await evidenceJobs.claimNext({ workerOwner: "evidence-worker", leaseSeconds: 60 });
     expect(evidenceClaim).toMatchObject({ kind: "reconciled", status: "succeeded" });
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("judging");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("judging");
     const judgeJob = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", investigation.id)
       .where("kind", "=", "investigation_judge").executeTakeFirstOrThrow();
     expect(judgeJob.status).toBe("queued");
@@ -221,7 +226,7 @@ describe.sequential("durable judge job orchestration", () => {
       modelId: "qwen-plus", promptVersion: "judge-v1", attemptId: claimed.claim.attemptId,
     });
     expect(await judgeJobs.completeSuccess(judgeJob.id, claimed.claim.leaseToken)).toEqual({ kind: "updated", status: "succeeded" });
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("completed_with_limitations");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("completed_with_limitations");
     const replayed = await replayPersistedReport(db, investigation.id);
     expect(replayed.artifact.claimJudgments[0].verdict).toBe("partially_verified");
   });
@@ -245,7 +250,7 @@ describe.sequential("durable judge job orchestration", () => {
       modelId: "qwen-plus", promptVersion: "judge-v1", attemptId: claimed.claim.attemptId,
     });
     expect(await judgeJobs.completeSuccess(judgeJob.id, claimed.claim.leaseToken)).toEqual({ kind: "updated", status: "succeeded" });
-    const completed = await investigations.getInvestigation(investigation.id);
+    const completed = await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID);
     expect(completed.status).toBe("completed");
     expect(completed.completedAt).not.toBeNull();
     const persisted = await db.selectFrom("investigation_events").selectAll().where("investigation_id", "=", investigation.id)

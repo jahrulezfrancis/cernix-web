@@ -22,9 +22,16 @@ export class ApiRequestError extends Error {
   }
 }
 
+function redirectToLogin(): void {
+  if (typeof window === "undefined") return;
+  const next = `${window.location.pathname}${window.location.search}`;
+  window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    credentials: "include",
     headers: {
       "content-type": "application/json",
       ...(init?.headers ?? {}),
@@ -32,7 +39,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = await response.json() as { error?: { code: string; message: string } };
   if (!response.ok) {
-    throw new ApiRequestError(response.status, body as { error: { code: string; message: string } });
+    const envelope = body as { error: { code: string; message: string } };
+    if (response.status === 401 && envelope.error?.code === "unauthenticated") {
+      redirectToLogin();
+    }
+    throw new ApiRequestError(response.status, envelope);
   }
   return body as T;
 }

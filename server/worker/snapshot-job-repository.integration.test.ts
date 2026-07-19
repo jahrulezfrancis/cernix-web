@@ -4,6 +4,7 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import type { Database } from "@/server/db/types";
 import { createDisposableTestDatabase } from "@/server/db/test-database";
 import { migrateToLatest, rollbackOne } from "@/server/db/migrate";
+import { TEST_OWNER_USER_ID, seedTestOwner } from "@/server/auth/test-fixtures";
 import { InvestigationRepository } from "@/server/persistence/investigation-repository";
 import { RepositorySnapshotRepository } from "@/server/persistence/repository-snapshot-repository";
 import { finalizeArtifact } from "@/server/github/manifest";
@@ -23,9 +24,9 @@ async function truncate() {
     manual_claims, investigations restart identity cascade`.execute(db);
 }
 async function started() {
-  const created = await investigations.createInvestigation(input, randomUUID());
-  await investigations.approveClaim(created.id, approval);
-  const investigation = await investigations.startInvestigation(created.id, randomUUID());
+  const created = await investigations.createInvestigation(input, randomUUID(), TEST_OWNER_USER_ID);
+  await investigations.approveClaim(created.id, approval, TEST_OWNER_USER_ID);
+  const investigation = await investigations.startInvestigation(created.id, randomUUID(), TEST_OWNER_USER_ID);
   const job = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", created.id).executeTakeFirstOrThrow();
   return { investigation, job };
 }
@@ -49,17 +50,19 @@ beforeAll(async () => {
   investigations = new InvestigationRepository(db); jobs = new SnapshotJobRepository(db);
   await migrateToLatest(db);
 });
-beforeEach(truncate);
+beforeEach(async () => {
+  await migrateToLatest(db);
+  await truncate();
+  await seedTestOwner(db);
+});
 afterAll(async () => { await harness?.cleanup(); });
 
 describe.sequential("durable snapshot job orchestration", () => {
   it("migrates populated queued jobs down and up while preserving claimability", async () => {
     const { job } = await started();
-    await rollbackOne(db);
-    await rollbackOne(db);
-    await rollbackOne(db);
-    await rollbackOne(db);
-    await rollbackOne(db);
+    for (let index = 0; index < 7; index += 1) {
+      await rollbackOne(db);
+    }
     const legacy = (await sql<{ id: string; attempt: number; status: string }>`select id, attempt, status from investigation_jobs where id=${job.id}`.execute(db)).rows[0];
     expect(legacy).toEqual({ id: job.id, attempt: 0, status: "queued" });
     await sql`alter table investigation_jobs rename constraint investigation_jobs_queued_lease_check to investigation_jobs_check`.execute(db);
@@ -71,9 +74,9 @@ describe.sequential("durable snapshot job orchestration", () => {
 
   it("copies the configured attempt budget into each newly queued job", async () => {
     const configured = new InvestigationRepository(db, () => new Date(), 2);
-    const created = await configured.createInvestigation(input, randomUUID());
-    await configured.approveClaim(created.id, approval);
-    await configured.startInvestigation(created.id, randomUUID());
+    const created = await configured.createInvestigation(input, randomUUID(), TEST_OWNER_USER_ID);
+    await configured.approveClaim(created.id, approval, TEST_OWNER_USER_ID);
+    await configured.startInvestigation(created.id, randomUUID(), TEST_OWNER_USER_ID);
     expect(await db.selectFrom("investigation_jobs").select("max_attempts").where("investigation_id", "=", created.id).executeTakeFirstOrThrow())
       .toEqual({ max_attempts: 2 });
   });
@@ -207,7 +210,7 @@ describe.sequential("durable snapshot job orchestration", () => {
     const claimed = await jobs.claimNext({ workerOwner: "worker-success", leaseSeconds: 30 });
     expect(claimed.kind).toBe("claimed"); if (claimed.kind !== "claimed") return;
     expect(await jobs.completeSuccess(job.id, claimed.claim.leaseToken)).toEqual({ kind: "updated", status: "succeeded" });
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("planning");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("planning");
     const planningJob = await db.selectFrom("investigation_jobs").selectAll()
       .where("investigation_id", "=", investigation.id).where("kind", "=", "investigation_planning").executeTakeFirst();
     expect(planningJob?.status).toBe("queued");
@@ -226,7 +229,7 @@ describe.sequential("durable snapshot job orchestration", () => {
     const retryClaim = await jobs.claimNext({ workerOwner: "worker-retry", leaseSeconds: 30 });
     expect(retryClaim.kind).toBe("claimed"); if (retryClaim.kind !== "claimed") return;
     await jobs.scheduleRetry(retrying.job.id, retryClaim.claim.leaseToken, "github_unavailable", 5);
-    expect((await investigations.getInvestigation(retrying.investigation.id)).status).toBe("snapshotting");
+    expect((await investigations.getInvestigation(retrying.investigation.id, TEST_OWNER_USER_ID)).status).toBe("snapshotting");
     expect((await jobs.getJob(retrying.job.id))!.leaseExpiresAt).toBeNull();
 
     await truncate();
@@ -235,7 +238,7 @@ describe.sequential("durable snapshot job orchestration", () => {
     expect(failureClaim.kind).toBe("claimed"); if (failureClaim.kind !== "claimed") return;
     expect(await jobs.completeFailure(failing.job.id, failureClaim.claim.leaseToken, "repository_private"))
       .toEqual({ kind: "updated", status: "failed" });
-    expect(await investigations.getInvestigation(failing.investigation.id)).toMatchObject({ status: "failed", failureCode: "repository_private" });
+    expect(await investigations.getInvestigation(failing.investigation.id, TEST_OWNER_USER_ID)).toMatchObject({ status: "failed", failureCode: "repository_private" });
     expect(await jobs.completeFailure(failing.job.id, failureClaim.claim.leaseToken, "repository_private"))
       .toEqual({ kind: "already_terminal", status: "failed" });
     expect(await db.selectFrom("investigation_events").selectAll().where("investigation_id", "=", failing.investigation.id)
@@ -245,7 +248,7 @@ describe.sequential("durable snapshot job orchestration", () => {
   it("cancels unleased or precisely leased obsolete work without failing the investigation", async () => {
     const queued = await started();
     expect(await jobs.cancel(queued.job.id, "obsolete_job")).toEqual({ kind: "updated", status: "cancelled" });
-    expect((await investigations.getInvestigation(queued.investigation.id)).status).toBe("snapshotting");
+    expect((await investigations.getInvestigation(queued.investigation.id, TEST_OWNER_USER_ID)).status).toBe("snapshotting");
     expect(await jobs.cancel(queued.job.id, "obsolete_job")).toEqual({ kind: "already_terminal", status: "cancelled" });
 
     await truncate();
@@ -298,7 +301,7 @@ describe.sequential("durable snapshot job orchestration", () => {
     });
     await expect(jobs.claimNext({ workerOwner: "worker-exhausted", leaseSeconds: 30 }))
       .resolves.toEqual({ kind: "reconciled", jobId: exhausted.job.id, status: "failed" });
-    expect((await investigations.getInvestigation(exhausted.investigation.id)).status).toBe("failed");
+    expect((await investigations.getInvestigation(exhausted.investigation.id, TEST_OWNER_USER_ID)).status).toBe("failed");
     expect(await db.selectFrom("snapshot_job_attempts").selectAll().where("job_id", "=", exhausted.job.id).execute()).toHaveLength(4);
 
     await truncate();
@@ -306,7 +309,7 @@ describe.sequential("durable snapshot job orchestration", () => {
     await investigations.transitionInvestigation(obsolete.investigation.id, "failed", { failureCode: "external_failure" });
     await expect(jobs.claimNext({ workerOwner: "worker-obsolete", leaseSeconds: 30 }))
       .resolves.toEqual({ kind: "reconciled", jobId: obsolete.job.id, status: "cancelled" });
-    expect((await investigations.getInvestigation(obsolete.investigation.id)).status).toBe("failed");
+    expect((await investigations.getInvestigation(obsolete.investigation.id, TEST_OWNER_USER_ID)).status).toBe("failed");
   });
 
   it("cascades attempts and rolls back injected finalization failure atomically", async () => {
@@ -320,7 +323,7 @@ describe.sequential("durable snapshot job orchestration", () => {
     expect(JSON.stringify(error)).not.toContain(claimed.claim.leaseToken);
     await db.schema.alterTable("investigation_events").dropConstraint("force_worker_event_failure").execute();
     expect((await jobs.getJob(value.job.id))!.status).toBe("leased");
-    expect((await investigations.getInvestigation(value.investigation.id)).status).toBe("snapshotting");
+    expect((await investigations.getInvestigation(value.investigation.id, TEST_OWNER_USER_ID)).status).toBe("snapshotting");
     expect((await db.selectFrom("snapshot_job_attempts").select("status").where("job_id", "=", value.job.id).executeTakeFirstOrThrow()).status).toBe("leased");
     await db.deleteFrom("investigations").where("id", "=", value.investigation.id).execute();
     expect(await db.selectFrom("snapshot_job_attempts").selectAll().where("job_id", "=", value.job.id).execute()).toHaveLength(0);

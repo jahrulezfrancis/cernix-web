@@ -3,8 +3,32 @@ import type { BackendLifecycleStatus } from "@/lib/contracts/investigation-api";
 
 type Timestamp = ColumnType<Date, Date, Date>;
 
+export interface UsersTable {
+  id: string;
+  github_id: string;
+  login: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+export interface SessionsTable {
+  id: string;
+  user_id: string;
+  token_hash_sha256: string;
+  expires_at: Timestamp;
+  created_at: Timestamp;
+}
+export interface SecurityEventsTable {
+  id: string;
+  user_id: string | null;
+  event_type: "login_success" | "login_failure" | "logout" | "session_expired" | "rate_limited";
+  metadata: ColumnType<Record<string, string | number | boolean | null>, string, string>;
+  created_at: Timestamp;
+}
 export interface InvestigationsTable {
   id: string;
+  owner_user_id: string;
   status: BackendLifecycleStatus;
   repository_owner: string;
   repository_name: string;
@@ -40,6 +64,7 @@ export interface InvestigationEventsTable {
   created_at: Timestamp;
 }
 export interface IdempotencyRecordsTable {
+  owner_user_id: string;
   scope: string;
   idempotency_key: string;
   request_hash_sha256: string;
@@ -351,6 +376,9 @@ export interface RepositorySnapshotFilesTable {
   byte_count: number; line_count: number; detected_language: string | null; created_at: Timestamp;
 }
 export interface Database {
+  users: UsersTable;
+  sessions: SessionsTable;
+  security_events: SecurityEventsTable;
   investigations: InvestigationsTable;
   manual_claims: ManualClaimsTable;
   investigation_events: InvestigationEventsTable;
