@@ -7,7 +7,8 @@ import { ApplicationError } from "@/server/errors";
 import { ADMISSION_POLICY_VERSION, MANIFEST_SCHEMA_VERSION, type ExclusionReason, type SnapshotArtifact, type SnapshotEntry } from "@/server/github/contracts";
 import { canonicalizeManifest } from "@/server/github/manifest";
 import { compareUtf8, isUnambiguouslyNormalizedPath } from "@/server/github/file-policy";
-import { containsHighConfidenceSecret } from "@/server/github/secret-scan";
+import { secretPolicyEvaluator } from "@/server/github/secret-scan";
+import { gitBlobSha1 } from "@/server/github/git-object";
 import { PublicInvestigationEventSchema } from "./events";
 
 export type SnapshotInvestigationContext = Readonly<{
@@ -57,7 +58,7 @@ function safeText(value: unknown, minimum: number, maximum: number): value is st
 function hash(bytes: Uint8Array): string { return createHash("sha256").update(bytes).digest("hex"); }
 function lines(text: string): number { return text.length === 0 ? 0 : (text.match(/\n/g)?.length ?? 0) + (text.endsWith("\n") ? 0 : 1); }
 
-function validatePersistedSnapshot(snapshot: PersistedRepositorySnapshot, fileRowCount: number): PersistedRepositorySnapshot {
+export function validatePersistedSnapshot(snapshot: PersistedRepositorySnapshot, fileRowCount: number): PersistedRepositorySnapshot {
   if (snapshot.manifestSchemaVersion !== MANIFEST_SCHEMA_VERSION || snapshot.admissionPolicyVersion !== ADMISSION_POLICY_VERSION) corrupt();
   if (!UUID.test(snapshot.id) || !UUID.test(snapshot.investigationId) || !/^[1-9]\d{0,18}$/.test(snapshot.githubRepositoryId) || BigInt(snapshot.githubRepositoryId) > 9_223_372_036_854_775_807n) corrupt();
   if (!OWNER.test(snapshot.canonicalOwner) || !REPOSITORY.test(snapshot.canonicalRepository) ||
@@ -91,10 +92,11 @@ function validatePersistedSnapshot(snapshot: PersistedRepositorySnapshot, fileRo
       if (!(file.rawContent instanceof Uint8Array) || !Number.isInteger(file.byteCount) || file.rawContent.byteLength !== file.byteCount || file.byteCount < 0 || file.byteCount > 1_048_576 ||
           !Number.isInteger(file.lineCount) || file.lineCount < 0 || file.lineCount > 100_000 || !SHA256.test(file.rawSha256) || !SHA256.test(file.normalizedSha256) ||
           hash(file.rawContent) !== file.rawSha256) corrupt();
+      if (gitBlobSha1(file.rawContent) !== entry.objectSha) corrupt();
       let normalized: string;
       try { normalized = new TextDecoder("utf-8", { fatal: true }).decode(file.rawContent).replace(/\r\n?/g, "\n"); }
       catch { corrupt(); }
-      if (normalized! !== file.normalizedText || TEXT_CONTROL.test(file.normalizedText) || containsHighConfidenceSecret(file.normalizedText) ||
+      if (normalized! !== file.normalizedText || TEXT_CONTROL.test(file.normalizedText) || secretPolicyEvaluator(snapshot.admissionPolicyVersion)(file.normalizedText) ||
           hash(new TextEncoder().encode(file.normalizedText)) !== file.normalizedSha256 || lines(file.normalizedText) !== file.lineCount ||
           (file.detectedLanguage !== null && !safeText(file.detectedLanguage, 1, 64))) corrupt();
       total += BigInt(file.byteCount);

@@ -30,7 +30,7 @@ async function snapshotting() {
 }
 function artifact() {
   const raw = Buffer.from("hello\r\n"), normalized = "hello\n";
-  const admitted: SnapshotEntry = { path: "README.md", mode: "100644", type: "blob", objectSha: "d".repeat(40),
+  const admitted: SnapshotEntry = { path: "README.md", mode: "100644", type: "blob", objectSha: "ef0493b275aa2080237f676d2ef6559246f56636",
     reportedSize: String(raw.byteLength), decision: "admitted", exclusionReason: null,
     rawSha256: createHash("sha256").update(raw).digest("hex"), normalizedSha256: createHash("sha256").update(normalized).digest("hex"),
     byteCount: raw.byteLength, lineCount: 1, rawContent: raw, normalizedText: normalized, detectedLanguage: "Markdown" };
@@ -217,6 +217,45 @@ describe.sequential("immutable repository snapshot persistence", () => {
     await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
     await db.updateTable("repository_snapshot_files").set({ normalized_sha256: admitted.normalizedSha256!, line_count: 2 }).where("snapshot_id", "=", persisted.id).execute();
     await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+  });
+
+  it("rejects a coherently rewritten body whose persisted Git object SHA is stale", async () => {
+    const investigation = await snapshotting(), persisted = await snapshots.createForInvestigation(investigation.id, artifact());
+    let githubBuilds = 0;
+    const service = new RepositorySnapshotService(snapshots, async () => { githubBuilds++; return artifact(); });
+    await expect(service.snapshotInvestigation(investigation.id)).resolves.toMatchObject({ id: persisted.id });
+    expect(githubBuilds).toBe(0);
+
+    const changedRaw = Buffer.from("jello\r\n"), changedText = "jello\n";
+    const rawSha256 = createHash("sha256").update(changedRaw).digest("hex");
+    const normalizedSha256 = createHash("sha256").update(changedText).digest("hex");
+    const changedEntries = persisted.entries.map((entry): SnapshotEntry => ({
+      path: entry.path, mode: entry.mode, type: entry.objectType, objectSha: entry.objectSha,
+      reportedSize: entry.reportedSize, decision: entry.decision,
+      exclusionReason: entry.exclusionReason as SnapshotEntry["exclusionReason"],
+      rawSha256: entry.decision === "admitted" ? rawSha256 : null,
+      normalizedSha256: entry.decision === "admitted" ? normalizedSha256 : null,
+      byteCount: entry.decision === "admitted" ? changedRaw.byteLength : null,
+      lineCount: entry.decision === "admitted" ? 1 : null,
+    }));
+    const manifest = canonicalizeManifest({ githubRepositoryId: persisted.githubRepositoryId,
+      canonicalOwner: persisted.canonicalOwner, canonicalRepository: persisted.canonicalRepository,
+      canonicalUrl: persisted.canonicalUrl, defaultBranch: persisted.defaultBranch,
+      requestedRef: persisted.requestedRef, resolvedRef: persisted.resolvedRef,
+      commitSha: persisted.commitSha, rootTreeSha: persisted.rootTreeSha, entries: changedEntries });
+    await db.updateTable("repository_snapshot_files").set({ raw_content: changedRaw, normalized_text: changedText,
+      raw_sha256: rawSha256, normalized_sha256: normalizedSha256, byte_count: changedRaw.byteLength, line_count: 1 })
+      .where("snapshot_id", "=", persisted.id).execute();
+    await db.updateTable("repository_snapshots").set({ total_admitted_bytes: String(changedRaw.byteLength),
+      manifest_hash_sha256: manifest.hash }).where("id", "=", persisted.id).execute();
+
+    await expect(snapshots.findByInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+    await expect(service.snapshotInvestigation(investigation.id)).rejects.toMatchObject({ code: "internal_error" });
+    expect(githubBuilds).toBe(0);
+    expect(await tableCount("repository_snapshots")).toBe(1);
+    expect(await tableCount("repository_snapshot_entries")).toBe(2);
+    expect(await tableCount("repository_snapshot_files")).toBe(1);
+    expect((await db.selectFrom("repository_snapshots").select("id").where("investigation_id", "=", investigation.id).executeTakeFirstOrThrow()).id).toBe(persisted.id);
   });
 
   it("rejects count, order, and manifest identity drift before replay", async () => {

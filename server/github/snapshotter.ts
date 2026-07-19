@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import type { GitHubSnapshotConfig } from "./config";
-import type { RepositoryIdentity, SnapshotArtifact, SnapshotEntry } from "./contracts";
+import { ADMISSION_POLICY_VERSION, type RepositoryIdentity, type SnapshotArtifact, type SnapshotEntry } from "./contracts";
 import { SnapshotError } from "./errors";
 import { applyAdmissionPolicy, compareUtf8, isUnambiguouslyNormalizedPath, MAX_SNAPSHOT_PATH_BYTES, type InspectedTreeEntry } from "./file-policy";
 import { finalizeArtifact } from "./manifest";
-import { containsHighConfidenceSecret } from "./secret-scan";
+import { secretPolicyEvaluator } from "./secret-scan";
+import { gitBlobSha1 } from "./git-object";
 import type { GitHubClient } from "./client";
 
 const SHA = /^[0-9a-fA-F]{40}$/;
@@ -175,14 +176,14 @@ function verifyBlob(entry: SnapshotEntry, value: unknown, config: GitHubSnapshot
       (entry.reportedSize !== null && BigInt(entry.reportedSize) !== BigInt(raw.byteLength))) {
     throw new SnapshotError("blob_verification_failed");
   }
-  const gitHash = createHash("sha1").update(`blob ${raw.byteLength}\0`).update(raw).digest("hex");
+  const gitHash = gitBlobSha1(raw);
   if (gitHash !== entry.objectSha) throw new SnapshotError("blob_verification_failed");
   if (raw.byteLength > config.maxFileBytes) return excluded(entry, "file_too_large");
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(raw); }
   catch { return excluded(entry, "invalid_utf8"); }
   if (TEXT_CONTROL.test(text)) return excluded(entry, "binary_content");
-  if (containsHighConfidenceSecret(text)) return excluded(entry, "secret_detected");
+  if (secretPolicyEvaluator(ADMISSION_POLICY_VERSION)(text)) return excluded(entry, "secret_detected");
   const normalizedText = text.replace(/\r\n?/g, "\n");
   const lineCount = normalizedText.length === 0 ? 0 : (normalizedText.match(/\n/g)?.length ?? 0) + (normalizedText.endsWith("\n") ? 0 : 1);
   if (lineCount > config.maxLinesPerFile) return excluded(entry, "line_count_limit");

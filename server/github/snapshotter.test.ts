@@ -67,6 +67,25 @@ describe("immutable repository snapshotter", () => {
     expect(fetcher).toHaveBeenCalledTimes(6);
   });
 
+  it.each([
+    ["private key", `-----BEGIN ${"PRIVATE"} KEY-----`],
+    ["GitHub legacy token", `gh${"p"}_${"A7".repeat(18)}`],
+    ["GitHub fine-grained token", `github_${"pat"}_${"A7_".repeat(8)}`],
+    ["AWS long-lived key", `AK${"IA"}${"A1".repeat(8)}`],
+    ["AWS temporary key", `AS${"IA"}${"A1".repeat(8)}`],
+    ["OpenAI key", `sk-${"live"}-${"aB3_".repeat(5)}`],
+    ["Slack token", `xox${"b"}-${"aB3-".repeat(5)}Z`],
+    ["Google API key", `AI${"za"}${"A7_".repeat(11)}A7`],
+    ["labeled credential", `access_${"token"}: ${"Q7_".repeat(9)}`],
+  ])("excludes the supported %s family before initial persistence", async (_name, secretValue) => {
+    const secret = blob(`${secretValue}\n`);
+    const tree = { sha: ROOT, truncated: false, tree: [treeEntry("candidate.txt", secret)] };
+    const artifact = await buildRepositorySnapshot({ owner: "Acme", repository: "Widget", requestedRef: null,
+      client: new GitHubClient(config, baseRoutes(tree, new Map([[secret.sha, secret.response]]))), config });
+    expect(artifact.entries[0]).toMatchObject({ decision: "excluded", exclusionReason: "secret_detected" });
+    expect(JSON.stringify(artifact)).not.toContain(secretValue);
+  });
+
   it("discards a truncated recursive tree and uses deterministic bounded BFS without a recursive parameter", async () => {
     const one = blob("one\n"), two = blob("two\n"), blobs = new Map([[one.sha, one.response], [two.sha, two.response]]);
     const fullTree = { sha: ROOT, truncated: false, tree: [

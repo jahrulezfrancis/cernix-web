@@ -73,6 +73,10 @@ excluded before any body is persisted. CRLF and lone CR become LF; normalized UT
 gets its own SHA-256 and a line count where an empty file has zero lines and a trailing
 newline does not create an extra line.
 
+Admission and secret-detection semantics are versioned with the admission policy.
+Changes to those semantics require a new policy version while preserving readers and
+evaluators for every persisted version that remains supported.
+
 Any provider representation, size, or Git-object identity inconsistency aborts the
 whole snapshot; it is never persisted as a file exclusion. Deterministic exclusions
 apply only after coherent bytes are verified. Blob work uses a bounded sliding window
