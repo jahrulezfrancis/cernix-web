@@ -154,10 +154,36 @@ npm run worker:evidence:once
 | `CERNIX_EVIDENCE_MAX_EXCERPT_BYTES` | 2,048 | 256–16,384 |
 | `CERNIX_EVIDENCE_MAX_CONTEXT_BYTES` | 65,536 | 4,096–262,144 |
 
+## Skeptic challenge worker
+
+The skeptic worker claims `investigation_skeptic` jobs while an investigation is in
+`challenging`. It reviews persisted evidence summaries, records grounded challenges,
+and routes the investigation to `judging` or bounded `reinvestigating` when targeted
+tasks must be rerun. Supplemental evidence completion in `reinvestigating` advances
+directly to `judging` without a second skeptic pass in Milestone 9.
+
+Run the skeptic worker separately:
+
+```bash
+npm run worker:skeptic
+npm run worker:skeptic:once
+```
+
+| Setting | Default | Range |
+|---|---:|---:|
+| `CERNIX_SKEPTIC_LEASE_SECONDS` | 180 | 30–900 |
+| `CERNIX_SKEPTIC_HEARTBEAT_SECONDS` | 45 | 1–449 and less than half the lease |
+| `CERNIX_SKEPTIC_POLL_MS` | 1,000 | 250–30,000 |
+| `CERNIX_SKEPTIC_MAX_ATTEMPTS` | 4 | 1–10 |
+| `CERNIX_SKEPTIC_RETRY_BASE_SECONDS` | 5 | 1–300 |
+| `CERNIX_SKEPTIC_RETRY_MAX_SECONDS` | 300 | 1–3,600 and at least the base |
+| `CERNIX_SKEPTIC_MAX_CONTEXT_BYTES` | 48,000 | 4,096–256,000 |
+| `CERNIX_MAX_REINVESTIGATION_CYCLES` | 1 | 0–10 |
+
 Qwen settings are server-only. Opt-in live provider smoke is available through
 `npm run test:github-live` for GitHub and the Qwen live-smoke test when
 `CERNIX_QWEN_LIVE_SMOKE=1` is set with a valid `QWEN_API_KEY`. Public API exposure,
-frontend cutover, and skeptic/judge stages remain deferred.
+frontend cutover, and judge stages remain deferred.
 
 ## Immutable public GitHub snapshots
 

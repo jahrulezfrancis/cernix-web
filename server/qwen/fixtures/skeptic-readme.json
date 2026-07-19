@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "investigationId": "22222222-2222-4222-8222-222222222222",
+  "snapshotManifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "commitSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "claimAnalyses": [
+    {
+      "claimId": "33333333-3333-4333-8333-333333333333",
+      "provisionalVerdictHint": "weakly_supports",
+      "confidenceFactors": ["README evidence is present but narrow."],
+      "knownLimitations": ["Static inspection only."]
+    }
+  ],
+  "challenges": [
+    {
+      "id": "chal_readme_scope",
+      "claimId": "33333333-3333-4333-8333-333333333333",
+      "challengeType": "narrower_scope",
+      "severity": "minor",
+      "summary": "README presence does not prove runtime behavior.",
+      "reasoning": "The cited evidence only demonstrates repository structure.",
+      "evidenceRefs": [
+        {
+          "candidateKey": "cand_readme",
+          "path": "README.md",
+          "lineStart": 1,
+          "lineEnd": 1,
+          "obligationKeys": ["obl_readme"]
+        }
+      ],
+      "relatedCandidateKeys": ["cand_readme"],
+      "requestedReinvestigation": false
+    }
+  ],
+  "outcome": "cleared_for_judgment",
+  "reinvestigationTaskKeys": []
+}

@@ -13,8 +13,8 @@ const ClaimEventSchema = z.strictObject({
   payload: z.strictObject({ qualifierCount: z.number().int().min(0).max(20) }),
 });
 const StartedEventSchema = z.strictObject({
-  type: z.literal("investigation_started"), stage: z.enum(["snapshotting", "planning", "investigating"]),
-  payload: z.strictObject({ jobKind: z.enum(["repository_snapshot", "investigation_planning", "investigation_evidence"]) }),
+  type: z.literal("investigation_started"), stage: z.enum(["snapshotting", "planning", "investigating", "challenging", "reinvestigating"]),
+  payload: z.strictObject({ jobKind: z.enum(["repository_snapshot", "investigation_planning", "investigation_evidence", "investigation_skeptic"]) }),
 });
 const SnapshotPersistedEventSchema = z.strictObject({
   type: z.literal("repository_snapshot_persisted"), stage: z.literal("snapshotting"),
@@ -39,13 +39,31 @@ const PlanPersistedEventSchema = z.strictObject({
   }),
 });
 const EvidenceTaskCompletedEventSchema = z.strictObject({
-  type: z.literal("evidence_task_completed"), stage: z.literal("investigating"),
+  type: z.literal("evidence_task_completed"), stage: z.enum(["investigating", "reinvestigating"]),
   payload: z.strictObject({
     runId: z.uuid(),
     taskKey: z.string().min(1).max(64),
     candidateCount: z.number().int().min(0).max(30),
     gapCount: z.number().int().min(0).max(20),
     counterCount: z.number().int().min(0).max(20),
+  }),
+});
+const SkepticAnalysisPersistedEventSchema = z.strictObject({
+  type: z.literal("skeptic_analysis_persisted"), stage: z.literal("challenging"),
+  payload: z.strictObject({
+    analysisId: z.uuid(),
+    outcome: z.enum(["cleared_for_judgment", "reinvestigation_required"]),
+    challengeCount: z.number().int().min(0).max(30),
+    schemaVersion: z.literal(1),
+    modelId: z.string().min(1).max(128),
+    promptVersion: z.string().min(1).max(64),
+  }),
+});
+const ReinvestigationStartedEventSchema = z.strictObject({
+  type: z.literal("reinvestigation_started"), stage: z.literal("reinvestigating"),
+  payload: z.strictObject({
+    cycle: z.number().int().min(1).max(10),
+    taskKeys: z.array(z.string().min(1).max(64)).min(1).max(20),
   }),
 });
 const LifecycleEventSchema = z.strictObject({
@@ -60,6 +78,7 @@ const LifecycleEventSchema = z.strictObject({
 
 export const PublicInvestigationEventSchema = z.union([
   CreatedEventSchema, ClaimEventSchema, StartedEventSchema, SnapshotPersistedEventSchema,
-  PlanPersistedEventSchema, EvidenceTaskCompletedEventSchema, LifecycleEventSchema,
+  PlanPersistedEventSchema, EvidenceTaskCompletedEventSchema, SkepticAnalysisPersistedEventSchema,
+  ReinvestigationStartedEventSchema, LifecycleEventSchema,
 ]);
 export type PublicInvestigationEvent = z.infer<typeof PublicInvestigationEventSchema>;

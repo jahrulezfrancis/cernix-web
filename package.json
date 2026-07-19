@@ -30,6 +30,8 @@
     "worker:planning:once": "tsx server/worker/run-planning-worker.ts --once",
     "worker:evidence": "tsx server/worker/run-evidence-worker.ts",
     "worker:evidence:once": "tsx server/worker/run-evidence-worker.ts --once",
+    "worker:skeptic": "tsx server/worker/run-skeptic-worker.ts",
+    "worker:skeptic:once": "tsx server/worker/run-skeptic-worker.ts --once",
     "db:migrate": "tsx server/db/migrate-cli.ts up",
     "db:rollback": "tsx server/db/migrate-cli.ts down"
   },
