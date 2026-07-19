@@ -6,9 +6,10 @@ import { investigationPlanningMigration } from "./004_investigation_planning";
 import { evidenceCollectionMigration } from "./005_evidence_collection";
 import { skepticChallengeMigration } from "./006_skeptic_challenge";
 import { judgmentReportMigration } from "./007_judgment_report";
+import { snapshotFilesEntryDecisionMigration } from "./008_snapshot_files_entry_decision";
 export const migrationProvider: MigrationProvider = {
   async getMigrations() { return { "001_initial": initialMigration, "002_repository_snapshots": repositorySnapshotsMigration,
     "003_snapshot_worker": snapshotWorkerMigration, "004_investigation_planning": investigationPlanningMigration,
     "005_evidence_collection": evidenceCollectionMigration, "006_skeptic_challenge": skepticChallengeMigration,
-    "007_judgment_report": judgmentReportMigration }; },
+    "007_judgment_report": judgmentReportMigration, "008_snapshot_files_entry_decision": snapshotFilesEntryDecisionMigration }; },
 };

@@ -57,7 +57,7 @@ describe("investigation judge service", () => {
     }));
   });
 
-  it("rejects provider output without claim judgments", async () => {
+  it("fills missing claim judgments with a bounded default", async () => {
     const judgment = {
       findByInvestigation: vi.fn(async () => null),
       loadJudgeContext: vi.fn(async () => ({
@@ -69,18 +69,20 @@ describe("investigation judge service", () => {
         challenges: [],
         evidenceSummary: { tasks: [] },
       })),
-      createForInvestigation: vi.fn(),
+      createForInvestigation: vi.fn(async (_id, artifact) => ({ id: "report", investigationId, artifact })),
     };
     const client = {
       createChatCompletion: vi.fn(async () => ({
         choices: [{ message: { content: JSON.stringify({ reportSummary: "Missing judgments." }) } }],
       })),
     };
-    await expect(new InvestigationJudgeService(judgment as never, client as never, {
+    await new InvestigationJudgeService(judgment as never, client as never, {
       apiKey: "k", apiOrigin: "https://dashscope.aliyuncs.com", modelId: "qwen-plus", promptVersion: "planning-v1",
       requestTimeoutMs: 1000, planningDeadlineMs: 2000, maxOutputTokens: 1000, maxContextBytes: 100000, maxResponseBytes: 100000,
-    }).judge(investigationId)).rejects.toMatchObject({ failureCode: "judge_schema_invalid" });
-    expect(judgment.createForInvestigation).not.toHaveBeenCalled();
+    }).judge(investigationId);
+    expect(judgment.createForInvestigation).toHaveBeenCalledWith(investigationId, expect.objectContaining({
+      claimJudgments: [expect.objectContaining({ claimId })],
+    }), expect.any(Object));
   });
 
   it("derives completion disposition from verdicts instead of trusting the model", async () => {
@@ -136,7 +138,7 @@ describe("investigation judge service", () => {
     };
     const client = {
       createChatCompletion: vi.fn(async () => ({
-        choices: [{ message: { content: JSON.stringify({ notAJudgeArtifact: true }) } }],
+        choices: [{ message: { content: JSON.stringify({ claimJudgments: [null] }) } }],
       })),
     };
     await expect(new InvestigationJudgeService(judgment as never, client as never, {

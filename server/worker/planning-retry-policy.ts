@@ -5,7 +5,7 @@ export type RetryPolicyConfig = Readonly<{ baseSeconds: number; maximumSeconds: 
 export type RetryDecision = Readonly<{ disposition: "retry" | "fail"; failureCode: string; delaySeconds: number | null }>;
 
 const RETRYABLE_PLANNING_CODES = new Set<PlanningFailureCode>([
-  "qwen_rate_limited", "qwen_unavailable", "qwen_timeout", "plan_deadline_exceeded",
+  "qwen_rate_limited", "qwen_unavailable", "qwen_timeout", "plan_deadline_exceeded", "plan_schema_invalid",
 ]);
 
 function boundedDelay(attemptNumber: number, config: RetryPolicyConfig): number {

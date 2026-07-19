@@ -120,6 +120,20 @@ describe("immutable repository snapshotter", () => {
       .rejects.toMatchObject({ failureCode: "blob_verification_failed" });
   });
 
+  it("accepts GitHub-style base64 content wrapped with newlines", async () => {
+    const object = blob("safe!");
+    const wrapped = {
+      ...object.response,
+      content: object.response.content.replace(/(.{60})/g, "$1\n"),
+    };
+    const tree = { sha: ROOT, truncated: false, tree: [treeEntry("wrapped.txt", object)] };
+    const artifact = await buildRepositorySnapshot({
+      owner: "Acme", repository: "Widget", requestedRef: null,
+      client: new GitHubClient(config, baseRoutes(tree, new Map([[object.sha, wrapped]]))), config,
+    });
+    expect(artifact.entries[0]).toMatchObject({ path: "wrapped.txt", decision: "admitted" });
+  });
+
   it.each([
     [new Uint8Array([0xff]), {}, "invalid_utf8"],
     [new Uint8Array([0, 65]), {}, "binary_content"],
@@ -246,7 +260,6 @@ describe("immutable repository snapshotter", () => {
     ["unsupported encoding", (object: ReturnType<typeof blob>) => ({ ...object.response, encoding: "utf-8" }), undefined],
     ["missing encoding", (object: ReturnType<typeof blob>) => { const { encoding: _encoding, ...rest } = object.response; return rest; }, undefined],
     ["invalid base64 alphabet", (object: ReturnType<typeof blob>) => ({ ...object.response, content: "%%%=" }), undefined],
-    ["base64 whitespace", (object: ReturnType<typeof blob>) => ({ ...object.response, content: `${object.response.content}\n` }), undefined],
     ["missing base64 padding", (object: ReturnType<typeof blob>) => ({ ...object.response, content: object.response.content.slice(0, -1) }), undefined],
     ["excess base64 padding", (object: ReturnType<typeof blob>) => ({ ...object.response, content: `${object.response.content}=` }), undefined],
     ["middle base64 padding", (object: ReturnType<typeof blob>) => ({ ...object.response, content: "c2=FmZSE" }), undefined],

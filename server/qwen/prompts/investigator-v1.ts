@@ -1,3 +1,5 @@
+import { EvidenceTypeSchema } from "@/lib/contracts/investigation-plan";
+
 export const INVESTIGATOR_PROMPT_VERSION = "investigator-v1";
 
 export function buildInvestigatorSystemPrompt(): string {
@@ -11,31 +13,37 @@ export function buildInvestigatorSystemPrompt(): string {
 }
 
 export function buildInvestigatorUserPrompt(input: Readonly<{
+  claimId: string;
   claimStatement: string;
+  obligationKeys: readonly string[];
   obligationDescriptions: readonly string[];
   taskKey: string;
   expectedEvidenceTypes: readonly string[];
   retrievalJson: string;
 }>): string {
   return JSON.stringify({
-    claimStatement: input.claimStatement,
+    claim: { id: input.claimId, statement: input.claimStatement },
     taskKey: input.taskKey,
-    obligations: input.obligationDescriptions,
+    obligations: input.obligationKeys.map((key, index) => ({
+      key,
+      description: input.obligationDescriptions[index] ?? key,
+    })),
     expectedEvidenceTypes: input.expectedEvidenceTypes,
+    allowedEvidenceTypes: EvidenceTypeSchema.options,
     retrieval: JSON.parse(input.retrievalJson),
     outputShape: {
-      taskKey: "string",
-      claimId: "uuid",
+      taskKey: input.taskKey,
+      claimId: input.claimId,
       candidates: [{
-        id: "string",
-        obligationKeys: ["string"],
-        evidenceType: "string",
+        id: "candidate_example",
+        obligationKeys: input.obligationKeys.slice(0, 1),
+        evidenceType: input.expectedEvidenceTypes[0] ?? "repository_structure",
         observation: "string",
-        excerpts: [{ path: "string", lineStart: 1, lineEnd: 1, normalizedSha256: "hex", excerptText: "string" }],
-        strength: "weak|moderate|strong",
+        excerpts: [{ path: "path/from/retrieval", lineStart: 1, lineEnd: 1, normalizedSha256: "hex", excerptText: "string" }],
+        strength: "moderate",
       }],
-      gaps: [{ id: "string", obligationKeys: ["string"], description: "string", impact: "low|medium|high" }],
-      counterevidence: [{ id: "string", description: "string", severity: "minor|material|critical" }],
+      gaps: [{ id: "gap_example", obligationKeys: input.obligationKeys.slice(0, 1), description: "string", impact: "medium" }],
+      counterevidence: [{ id: "counter_example", description: "string", severity: "minor" }],
     },
   });
 }

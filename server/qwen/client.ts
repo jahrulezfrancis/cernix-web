@@ -1,4 +1,4 @@
-import { QWEN_API_ORIGIN, QWEN_CHAT_COMPLETIONS_PATH, type QwenChatCompletionRequest, type QwenChatCompletionResponse } from "./contracts";
+import { QWEN_API_ORIGINS, QWEN_CHAT_COMPLETIONS_PATH, type QwenChatCompletionRequest, type QwenChatCompletionResponse } from "./contracts";
 import type { QwenPlanningConfig } from "./config";
 import { PlanningError } from "./errors";
 
@@ -38,7 +38,7 @@ export class QwenClient {
 
   async createChatCompletion(request: QwenChatCompletionRequest, signal?: AbortSignal): Promise<QwenChatCompletionResponse> {
     const url = `${this.config.apiOrigin}${QWEN_CHAT_COMPLETIONS_PATH}`;
-    if (!url.startsWith(QWEN_API_ORIGIN)) throw new PlanningError("qwen_malformed_response");
+    if (!QWEN_API_ORIGINS.some((origin) => url.startsWith(origin))) throw new PlanningError("qwen_malformed_response");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
     const abort = () => controller.abort(signal?.reason);

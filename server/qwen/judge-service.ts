@@ -1,9 +1,9 @@
-import { deriveCompletionDisposition, validateJudgeArtifact } from "@/lib/contracts/judgment-report";
 import type { JudgmentRepository, PersistedInvestigationReport } from "@/server/persistence/judgment-repository";
 import { ApplicationError } from "@/server/errors";
 import type { QwenClient } from "./client";
 import type { QwenPlanningConfig } from "./config";
 import { PlanningError } from "./errors";
+import { buildJudgeArtifactFromProviderResponse } from "./judge-normalizer";
 import { parseJudgeContextConfig } from "@/server/judge/judge-config";
 import { buildJudgeSystemPrompt, buildJudgeUserPrompt, JUDGE_PROMPT_VERSION } from "./prompts/judge-v1";
 
@@ -26,6 +26,7 @@ export class InvestigationJudgeService {
       throw new PlanningError("judge_context_invalid");
     }
     const userPrompt = buildJudgeUserPrompt({
+      claimId: context.claim.id,
       claimStatement: context.claim.statement,
       preservedQualifiers: context.claim.preservedQualifiers,
       obligations: context.obligations,
@@ -52,28 +53,15 @@ export class InvestigationJudgeService {
     try { parsed = JSON.parse(content); } catch (error) { throw new PlanningError("qwen_malformed_response", error); }
     let artifact;
     try {
-      const parsedObject = parsed as Record<string, unknown>;
-      const claimJudgments = parsedObject.claimJudgments;
-      if (!Array.isArray(claimJudgments) || claimJudgments.length === 0) {
-        throw new Error("claimJudgments is required");
-      }
-      if (typeof parsedObject.reportSummary !== "string" || parsedObject.reportSummary.trim().length === 0) {
-        throw new Error("reportSummary is required");
-      }
-      const draft = {
-        ...parsedObject,
-        schemaVersion: 1,
+      artifact = buildJudgeArtifactFromProviderResponse({
+        parsed,
         investigationId,
+        claimId: context.claim.id,
         snapshotManifestHash: context.snapshot.manifestHashSha256,
         commitSha: context.snapshot.commitSha,
-        claimJudgments,
-        limitations: parsedObject.limitations ?? [],
-        maintainerActions: parsedObject.maintainerActions ?? [],
-        reportSummary: parsedObject.reportSummary,
-        completionDisposition: deriveCompletionDisposition({ claimJudgments: claimJudgments as never }),
-      };
-      artifact = validateJudgeArtifact(draft);
+      });
     } catch (error) {
+      if (error instanceof PlanningError) throw error;
       throw new PlanningError("judge_schema_invalid", error);
     }
     try {

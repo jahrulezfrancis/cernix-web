@@ -1,8 +1,14 @@
 import type { InvestigationClaimPlan } from "@/lib/contracts/investigation-plan";
+import {
+  EvidenceTypeSchema,
+  ObligationTaxonomySchema,
+  SpecialistCapabilitySchema,
+} from "@/lib/contracts/investigation-plan";
 
 export const PLANNING_PROMPT_VERSION = "planning-v1" as const;
 
 export type PlanningPromptInput = Readonly<{
+  claimId: string;
   claimStatement: string;
   preservedQualifiers: readonly string[];
   snapshotSummaryJson: string;
@@ -23,12 +29,17 @@ export function buildPlanningSystemPrompt(): string {
 export function buildPlanningUserPrompt(input: PlanningPromptInput): string {
   return JSON.stringify({
     instruction: "Produce an investigation claim plan.",
-    claim: { statement: input.claimStatement, preservedQualifiers: input.preservedQualifiers },
+    claim: { id: input.claimId, statement: input.claimStatement, preservedQualifiers: input.preservedQualifiers },
     snapshotSummary: JSON.parse(input.snapshotSummaryJson),
+    allowedValues: {
+      obligationTaxonomies: ObligationTaxonomySchema.options,
+      specialistCapabilities: SpecialistCapabilitySchema.options,
+      evidenceTypes: EvidenceTypeSchema.options,
+    },
     outputSchema: {
       claimPlans: [{
-        claimId: "uuid",
-        obligations: [{ id: "obl_example", claimId: "uuid", description: "string", taxonomy: "security_control", priority: 1 }],
+        claimId: input.claimId,
+        obligations: [{ id: "obl_example", claimId: input.claimId, description: "string", taxonomy: "security_control", priority: 1 }],
         evidenceTasks: [{
           id: "task_example",
           obligationIds: ["obl_example"],

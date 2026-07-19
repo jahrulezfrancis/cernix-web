@@ -1,3 +1,10 @@
+import {
+  ChallengeSeveritySchema,
+  ChallengeTypeSchema,
+  ProvisionalVerdictHintSchema,
+  SkepticOutcomeSchema,
+} from "@/lib/contracts/skeptic-challenge";
+
 export const SKEPTIC_PROMPT_VERSION = "skeptic-v1";
 
 export function buildSkepticSystemPrompt(): string {
@@ -13,6 +20,7 @@ export function buildSkepticSystemPrompt(): string {
 }
 
 export function buildSkepticUserPrompt(input: Readonly<{
+  claimId: string;
   claimStatement: string;
   preservedQualifiers: readonly string[];
   obligations: readonly Readonly<{ key: string; description: string }>[];
@@ -20,16 +28,31 @@ export function buildSkepticUserPrompt(input: Readonly<{
   reinvestigationCycle: number;
 }>): string {
   return JSON.stringify({
-    claimStatement: input.claimStatement,
-    preservedQualifiers: input.preservedQualifiers,
+    claim: { id: input.claimId, statement: input.claimStatement, preservedQualifiers: input.preservedQualifiers },
     obligations: input.obligations,
     reinvestigationCycle: input.reinvestigationCycle,
     evidence: JSON.parse(input.evidenceJson),
+    allowedValues: {
+      provisionalVerdictHints: ProvisionalVerdictHintSchema.options,
+      challengeTypes: ChallengeTypeSchema.options,
+      challengeSeverities: ChallengeSeveritySchema.options,
+      outcomes: SkepticOutcomeSchema.options,
+    },
     outputShape: {
-      claimAnalyses: [{ claimId: "uuid", provisionalVerdictHint: "supports|weakly_supports|insufficient|contradicted" }],
-      challenges: [{ id: "string", claimId: "uuid", challengeType: "string", severity: "critical|major|minor", summary: "string", reasoning: "string" }],
-      outcome: "cleared_for_judgment|reinvestigation_required",
-      reinvestigationTaskKeys: ["task_key"],
+      claimAnalyses: [{ claimId: input.claimId, provisionalVerdictHint: "insufficient", confidenceFactors: [], knownLimitations: [] }],
+      challenges: [{
+        id: "challenge_example",
+        claimId: input.claimId,
+        challengeType: "narrower_scope",
+        severity: "minor",
+        summary: "string",
+        reasoning: "string",
+        evidenceRefs: [],
+        relatedCandidateKeys: [],
+        requestedReinvestigation: false,
+      }],
+      outcome: "cleared_for_judgment",
+      reinvestigationTaskKeys: [],
     },
   });
 }

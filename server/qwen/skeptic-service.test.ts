@@ -87,7 +87,7 @@ describe("investigation skeptic service", () => {
     };
     const client = {
       createChatCompletion: vi.fn(async () => ({
-        choices: [{ message: { content: JSON.stringify({ notASkepticArtifact: true }) } }],
+        choices: [{ message: { content: JSON.stringify({ challenges: [null] }) } }],
       })),
     };
     await expect(new InvestigationSkepticService(skeptic as never, client as never, {

@@ -1,3 +1,4 @@
+import "@/server/load-local-env";
 import { pathToFileURL } from "node:url";
 import { closeDatabase, getDatabase } from "@/server/db/database";
 import { EvidenceRepository } from "@/server/persistence/evidence-repository";

@@ -1,4 +1,4 @@
-import { validateEvidenceTaskResult } from "@/lib/contracts/evidence-candidate";
+import { buildEvidenceTaskResultFromProviderResponse } from "./evidence-normalizer";
 import type { EvidenceRepository, EvidenceTaskRun } from "@/server/persistence/evidence-repository";
 import { ApplicationError } from "@/server/errors";
 import type { QwenClient } from "./client";
@@ -34,7 +34,9 @@ export class RepositoryInvestigatorService {
     if (!retrievalBundleWithinLimit(bundle, this.retrieval.maxContextBytes)) throw new PlanningError("evidence_context_invalid");
     const retrievalJson = serializeRetrievalBundle(bundle);
     const userPrompt = buildInvestigatorUserPrompt({
+      claimId: context.run.claimId,
       claimStatement: context.claimStatement,
+      obligationKeys: context.run.obligationKeys,
       obligationDescriptions: context.obligationDescriptions,
       taskKey: run.taskKey,
       expectedEvidenceTypes: run.expectedEvidenceTypes,
@@ -59,12 +61,15 @@ export class RepositoryInvestigatorService {
     try { parsed = JSON.parse(content); } catch (error) { throw new PlanningError("qwen_malformed_response", error); }
     let artifact;
     try {
-      artifact = validateEvidenceTaskResult({
-        ...(parsed as object),
+      artifact = buildEvidenceTaskResultFromProviderResponse({
+        parsed,
         taskKey: run.taskKey,
         claimId: run.claimId,
+        obligationKeys: run.obligationKeys,
+        retrievalMatches: bundle.matches,
       });
     } catch (error) {
+      if (error instanceof PlanningError) throw error;
       throw new PlanningError("evidence_schema_invalid", error);
     }
     try {

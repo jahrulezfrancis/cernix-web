@@ -1,9 +1,9 @@
 import { ApplicationError } from "@/server/errors";
-import { QWEN_API_ORIGIN } from "./contracts";
+import { QWEN_API_ORIGIN, QWEN_API_ORIGINS, type QwenApiOrigin } from "./contracts";
 
 export type QwenPlanningConfig = Readonly<{
   apiKey: string;
-  apiOrigin: typeof QWEN_API_ORIGIN;
+  apiOrigin: QwenApiOrigin;
   modelId: string;
   promptVersion: string;
   requestTimeoutMs: number;
@@ -38,11 +38,13 @@ export function parseQwenPlanningConfig(environment: Environment): QwenPlanningC
   if (!MODEL_ID.test(modelId) || !PROMPT_VERSION.test(promptVersion)) {
     throw new ApplicationError("dependency_unavailable", {});
   }
-  const apiOrigin = environment.QWEN_API_ORIGIN?.trim();
-  if (apiOrigin && apiOrigin !== QWEN_API_ORIGIN) throw new ApplicationError("dependency_unavailable", {});
+  const configuredOrigin = environment.QWEN_API_ORIGIN?.trim() || QWEN_API_ORIGIN;
+  if (!(QWEN_API_ORIGINS as readonly string[]).includes(configuredOrigin)) {
+    throw new ApplicationError("dependency_unavailable", {});
+  }
   return Object.freeze({
     apiKey,
-    apiOrigin: QWEN_API_ORIGIN,
+    apiOrigin: configuredOrigin as QwenApiOrigin,
     modelId,
     promptVersion,
     requestTimeoutMs: integer(environment, "QWEN_REQUEST_TIMEOUT_MS", 30_000, 1_000, 120_000),

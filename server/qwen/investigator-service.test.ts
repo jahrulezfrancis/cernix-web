@@ -65,11 +65,7 @@ describe("repository investigator service", () => {
     const evidence = {
       findTaskResultByRun: vi.fn(async () => null),
       loadInvestigatorContext: vi.fn(async () => ({
-        run, claimStatement: "README exists.", obligationDescriptions: ["README exists."],
-        snapshot: { ...snapshot, entries: [{
-          path: "README.md", decision: "admitted",
-          file: { normalizedText: "README ".repeat(2_000), normalizedSha256: "a".repeat(64) },
-        }] },
+        run, claimStatement: "README ".repeat(2_000), obligationDescriptions: ["README exists."], snapshot,
       })),
       persistTaskResult: vi.fn(),
       loadTaskRun: vi.fn(),
@@ -78,7 +74,7 @@ describe("repository investigator service", () => {
     await expect(new RepositoryInvestigatorService(evidence as never, client as never, {
       apiKey: "k", apiOrigin: "https://dashscope.aliyuncs.com", modelId: "qwen-plus", promptVersion: "planning-v1",
       requestTimeoutMs: 1000, planningDeadlineMs: 2000, maxOutputTokens: 1000, maxContextBytes: 100000, maxResponseBytes: 100000,
-    }).investigateTask(runId)).rejects.toBeInstanceOf(PlanningError);
+    }).investigateTask(runId)).rejects.toMatchObject({ failureCode: "evidence_context_invalid" });
     expect(client.createChatCompletion).not.toHaveBeenCalled();
   });
 
@@ -93,7 +89,7 @@ describe("repository investigator service", () => {
     };
     const client = {
       createChatCompletion: vi.fn(async () => ({
-        choices: [{ message: { content: JSON.stringify({ notATaskResult: true }) } }],
+        choices: [{ message: { content: JSON.stringify({ investigatorNotes: "x".repeat(5000) }) } }],
       })),
     };
     await expect(new RepositoryInvestigatorService(evidence as never, client as never, {

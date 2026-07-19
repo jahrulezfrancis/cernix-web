@@ -146,10 +146,12 @@ async function enumerateTree(client: GitHubClient, owner: string, repository: st
 }
 
 function strictBase64(value: unknown): Uint8Array | null {
-  if (typeof value !== "string" || value.length % 4 !== 0 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return null;
-  const decoded = Buffer.from(value, "base64");
-  if (decoded.toString("base64") !== value) return null;
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/\s+/g, "");
+  if (normalized.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(normalized)) return null;
+  const decoded = Buffer.from(normalized, "base64");
+  if (decoded.toString("base64") !== normalized) return null;
   return decoded;
 }
 
