@@ -11,8 +11,10 @@ export const systemTimeSource: TimeSource = Object.freeze({
   random: () => Math.random(),
   sleep: (milliseconds, signal) => new Promise<void>((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);
-    const timer = setTimeout(resolve, milliseconds);
-    signal?.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+    const cleanup = () => signal?.removeEventListener("abort", abort);
+    const timer = setTimeout(() => { cleanup(); resolve(); }, milliseconds);
+    const abort = () => { clearTimeout(timer); cleanup(); reject(signal?.reason); };
+    signal?.addEventListener("abort", abort, { once: true });
   }),
 });
 
@@ -26,10 +28,13 @@ export class SnapshotRequestBudget {
     this.deadlineAt = this.startedAt + deadlineMs;
   }
 
-  claim(): number {
+  claim(signal?: AbortSignal): number {
+    if (signal?.aborted) throw new SnapshotError("github_unavailable");
     this.assertTime();
     if (this.count >= this.maximum) throw new SnapshotError("request_budget_exceeded");
-    return ++this.count;
+    const claimed = ++this.count;
+    if (signal?.aborted) throw new SnapshotError("github_unavailable");
+    return claimed;
   }
 
   assertTime(): void {

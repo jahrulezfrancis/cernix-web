@@ -73,7 +73,7 @@ export interface RepositorySnapshotEntriesTable {
   exclusion_reason: string | null; manifest_order: number;
 }
 export interface RepositorySnapshotFilesTable {
-  id: string; snapshot_id: string; entry_id: string; raw_content: Uint8Array;
+  id: string; snapshot_id: string; entry_id: string; entry_decision: "admitted"; raw_content: Uint8Array;
   normalized_text: string; raw_sha256: string; normalized_sha256: string;
   byte_count: number; line_count: number; detected_language: string | null; created_at: Timestamp;
 }

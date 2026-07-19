@@ -53,6 +53,10 @@ two attempts for 429, classified secondary-rate-limit 403 responses, retryable 5
 timeouts, and verified transient network failures. Retry delay never resets the shared
 deadline or request counter.
 
+Recursive and fallback traversal use the same path-depth rule. Repeated tree objects
+are validated once and mounted independently at every prefix, while an ancestor cycle
+fails the snapshot.
+
 Admission policy version 1 excludes trees, symlinks, submodules, unsafe paths,
 generated/cache/build directories, dependency/vendor directories, secret-bearing
 paths, lockfiles, minified bundles, source maps, unsupported binary/media/archive/
@@ -69,6 +73,16 @@ excluded before any body is persisted. CRLF and lone CR become LF; normalized UT
 gets its own SHA-256 and a line count where an empty file has zero lines and a trailing
 newline does not create an extra line.
 
+Any provider representation, size, or Git-object identity inconsistency aborts the
+whole snapshot; it is never persisted as a file exclusion. Deterministic exclusions
+apply only after coherent bytes are verified. Blob work uses a bounded sliding window
+and consumes results in canonical UTF-8 path order. The admitted-byte limit bounds
+retained admitted raw content, while the completion window adds at most approximately
+`blob concurrency × per-file bytes` plus bounded decoding/protocol overhead. When an
+unknown-size file does not fit the remaining total, its body is discarded immediately;
+later canonical files are still considered. Git LFS pointers represent pointer text,
+not the separately stored LFS object.
+
 Manifest schema version 1 uses fixed-order JSON fields, explicit nulls, UTF-8 byte-wise
 path sorting, UTF-8 encoding, and exactly one final LF. Its SHA-256 excludes timestamps,
 database IDs, request IDs, rate metadata, and every other nondeterministic operational
@@ -83,6 +97,16 @@ every inspected entry, bodies only for admitted files, precision-safe PostgreSQL
 finishes before the short transaction. The transaction locks and rechecks the
 investigation, inserts the complete snapshot atomically, and returns a concurrent
 winner on replay. It does not consume the queued job or advance lifecycle state.
+
+PostgreSQL uses a decision-qualified foreign key so only an `admitted` entry in the
+same snapshot can own a body. Cross-row counts, body/hash/text/line coherence, manifest
+order, supported versions, and the reconstructed canonical manifest hash are also
+validated by one bounded set-based loader before every replay or downstream return.
+This cross-row verification is application-enforced; snapshot immutability is likewise
+application-level, and deleting an investigation still cascades its snapshot. Rolling
+migration 002 down deliberately deletes snapshot data and
+`repository_snapshot_persisted` events while preserving all legacy investigation
+events so the migration-001 event constraint can be restored coherently.
 
 Repository source is never cloned, checked out, materialized to repository paths,
 built, installed, imported, or executed.

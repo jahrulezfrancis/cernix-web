@@ -59,13 +59,12 @@ export function primaryExclusion(entry: InspectedTreeEntry, config: GitHubSnapsh
 
 export function applyAdmissionPolicy(entries: readonly InspectedTreeEntry[], config: GitHubSnapshotConfig): SnapshotEntry[] {
   let admitted = 0;
-  let reportedBytes = 0n;
   return [...entries].sort((a, b) => compareUtf8(a.path, b.path)).map((entry) => {
     let reason = primaryExclusion(entry, config);
     if (!reason && admitted >= config.maxAdmittedFiles) reason = "file_count_limit";
-    const size = BigInt(entry.reportedSize ?? "0");
-    if (!reason && reportedBytes + size > BigInt(config.maxTotalTextBytes)) reason = "total_bytes_limit";
-    if (!reason) { admitted++; reportedBytes += size; }
+    // Aggregate admission is deliberately deferred until verified bytes are
+    // consumed in canonical path order. Tree sizes are only advisory.
+    if (!reason) admitted++;
     return {
       path: entry.path, mode: entry.mode, type: entry.type, objectSha: entry.sha,
       reportedSize: entry.reportedSize, decision: reason ? "excluded" : "admitted",

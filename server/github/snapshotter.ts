@@ -90,28 +90,45 @@ function ensureUniquePaths(entries: readonly InspectedTreeEntry[]): void {
   }
 }
 
+function entryTreeDepth(entry: Pick<InspectedTreeEntry, "path" | "mode" | "type">): number {
+  const slashCount = entry.path.split("/").length - 1;
+  return entry.mode === "040000" && entry.type === "tree" ? slashCount + 1 : slashCount;
+}
+
+function enforceTreeDepth(entries: readonly InspectedTreeEntry[], maximum: number): void {
+  if (entries.some((entry) => entryTreeDepth(entry) > maximum)) throw new SnapshotError("tree_depth_exceeded");
+}
+
 async function enumerateTree(client: GitHubClient, owner: string, repository: string, rootSha: string, config: GitHubSnapshotConfig, signal?: AbortSignal): Promise<InspectedTreeEntry[]> {
   const recursive = treeResponse(await client.getTree(owner, repository, rootSha, true, signal), rootSha, true);
   if (!recursive.truncated) {
     if (recursive.entries.length > config.maxInspectedEntries) throw new SnapshotError("tree_entry_limit_exceeded");
+    enforceTreeDepth(recursive.entries, config.maxTreeDepth);
     ensureUniquePaths(recursive.entries);
     return recursive.entries.sort((a, b) => compareUtf8(a.path, b.path));
   }
   type Work = { prefix: string; treeSha: string; depth: number; ancestors: ReadonlySet<string> };
   const queue: Work[] = [{ prefix: "", treeSha: rootSha, depth: 0, ancestors: new Set([rootSha]) }];
   const visited = new Set<string>();
+  const trees = new Map<string, readonly InspectedTreeEntry[]>();
   const result: InspectedTreeEntry[] = [];
   for (let cursor = 0; cursor < queue.length; cursor++) {
     const work = queue[cursor];
     const key = `${work.prefix}\u0000${work.treeSha}`;
     if (visited.has(key)) throw new SnapshotError("tree_cycle_detected");
     visited.add(key);
-    const response = treeResponse(await client.getTree(owner, repository, work.treeSha, false, signal), work.treeSha, false);
+    let relatives = trees.get(work.treeSha);
+    if (!relatives) {
+      const response = treeResponse(await client.getTree(owner, repository, work.treeSha, false, signal), work.treeSha, false);
+      relatives = [...response.entries].sort((a, b) => compareUtf8(a.path, b.path));
+      trees.set(work.treeSha, relatives);
+    }
     const children: Work[] = [];
-    for (const relative of response.entries.sort((a, b) => compareUtf8(a.path, b.path))) {
+    for (const relative of relatives) {
       if (relative.path.includes("/")) throw new SnapshotError("malformed_github_response");
       const full = work.prefix ? `${work.prefix}/${relative.path}` : relative.path;
       const entry = { ...relative, path: full };
+      if (entryTreeDepth(entry) > config.maxTreeDepth) throw new SnapshotError("tree_depth_exceeded");
       result.push(entry);
       if (result.length > config.maxInspectedEntries) throw new SnapshotError("tree_entry_limit_exceeded");
       if (relative.mode === "040000" && relative.type === "tree") {
@@ -128,11 +145,10 @@ async function enumerateTree(client: GitHubClient, owner: string, repository: st
 }
 
 function strictBase64(value: unknown): Uint8Array | null {
-  if (typeof value !== "string" || /[^A-Za-z0-9+/=\r\n]/.test(value)) return null;
-  const compact = value.replace(/\r?\n/g, "");
-  if (compact.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(compact)) return null;
-  const decoded = Buffer.from(compact, "base64");
-  if (decoded.toString("base64") !== compact) return null;
+  if (typeof value !== "string" || value.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return null;
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.toString("base64") !== value) return null;
   return decoded;
 }
 
@@ -147,19 +163,21 @@ function language(path: string): string | null {
 }
 
 function verifyBlob(entry: SnapshotEntry, value: unknown, config: GitHubSnapshotConfig): SnapshotEntry {
-  const source = record(value);
-  let responseSha: string;
-  try { responseSha = sha(source.sha); } catch { return excluded(entry, "blob_mismatch"); }
-  if (responseSha !== entry.objectSha) return excluded(entry, "blob_mismatch");
-  if (source.encoding !== "base64") return excluded(entry, "unsupported_encoding");
+  let source: Record<string, unknown>, responseSha: string, responseSize: string;
+  try {
+    source = record(value);
+    responseSha = sha(source.sha);
+    responseSize = decimal(source.size)!;
+  } catch (cause) { throw new SnapshotError("blob_verification_failed", cause); }
+  if (responseSha !== entry.objectSha || source.encoding !== "base64") throw new SnapshotError("blob_verification_failed");
   const raw = strictBase64(source.content);
-  if (!raw) return excluded(entry, "unsupported_encoding");
-  const responseSize = decimal(source.size, true);
-  if (responseSize !== null && BigInt(responseSize) !== BigInt(raw.byteLength)) return excluded(entry, "content_size_mismatch");
-  if (entry.reportedSize !== null && BigInt(entry.reportedSize) !== BigInt(raw.byteLength)) return excluded(entry, "content_size_mismatch");
-  if (raw.byteLength > config.maxFileBytes) return excluded(entry, "file_too_large");
+  if (!raw || BigInt(responseSize) !== BigInt(raw.byteLength) ||
+      (entry.reportedSize !== null && BigInt(entry.reportedSize) !== BigInt(raw.byteLength))) {
+    throw new SnapshotError("blob_verification_failed");
+  }
   const gitHash = createHash("sha1").update(`blob ${raw.byteLength}\0`).update(raw).digest("hex");
-  if (gitHash !== entry.objectSha) return excluded(entry, "blob_mismatch");
+  if (gitHash !== entry.objectSha) throw new SnapshotError("blob_verification_failed");
+  if (raw.byteLength > config.maxFileBytes) return excluded(entry, "file_too_large");
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(raw); }
   catch { return excluded(entry, "invalid_utf8"); }
@@ -177,42 +195,71 @@ function verifyBlob(entry: SnapshotEntry, value: unknown, config: GitHubSnapshot
   };
 }
 
-async function retrieveBlobs(entries: SnapshotEntry[], client: GitHubClient, owner: string, repository: string, config: GitHubSnapshotConfig, signal?: AbortSignal): Promise<SnapshotEntry[]> {
+type SnapshotterTestHooks = Readonly<{ retainedBytes?(bytes: number): void }>;
+
+async function retrieveBlobs(entries: SnapshotEntry[], client: GitHubClient, owner: string, repository: string, config: GitHubSnapshotConfig, signal?: AbortSignal, hooks?: SnapshotterTestHooks): Promise<SnapshotEntry[]> {
   const output = [...entries], indexes = entries.map((entry, index) => entry.decision === "admitted" ? index : -1).filter((index) => index >= 0);
   const controller = new AbortController();
-  const cancel = () => controller.abort();
-  if (signal?.aborted) controller.abort();
+  const cancel = () => controller.abort(signal?.reason);
+  if (signal?.aborted) controller.abort(signal.reason);
   else signal?.addEventListener("abort", cancel, { once: true });
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(config.maxConcurrency, indexes.length) }, async () => {
-    try {
-      while (cursor < indexes.length) {
-        const index = indexes[cursor++];
-        const entry = output[index];
-        const value = await client.getBlob(owner, repository, entry.objectSha, controller.signal);
-        output[index] = verifyBlob(entry, value, config);
+  type Settled = { entry?: SnapshotEntry; error?: unknown; retained: number };
+  const pending = new Map<number, Promise<Settled>>();
+  let nextToSchedule = 0, admittedBytes = 0, pendingBytes = 0, fatal = false, fatalError: unknown;
+  const report = () => hooks?.retainedBytes?.(admittedBytes + pendingBytes);
+  const start = (position: number) => {
+    const index = indexes[position], original = output[index];
+    const task = client.getBlob(owner, repository, original.objectSha, controller.signal)
+      .then((value): Settled => {
+        const entry = verifyBlob(original, value, config);
+        const retained = entry.decision === "admitted" ? entry.byteCount! : 0;
+        pendingBytes += retained; report();
+        return { entry, retained };
+      })
+      .catch((error): Settled => {
+        fatal = true;
+        if (error instanceof SnapshotError && error.failureCode === "blob_verification_failed") fatalError = error;
+        else fatalError ??= error;
+        controller.abort();
+        return { error, retained: 0 };
+      });
+    pending.set(position, task);
+  };
+  const fill = () => {
+    while (!fatal && nextToSchedule < indexes.length && pending.size < config.maxConcurrency) start(nextToSchedule++);
+  };
+  fill();
+  try {
+    for (let position = 0; position < indexes.length; position++) {
+      const result = await pending.get(position)!;
+      pending.delete(position);
+      pendingBytes -= result.retained;
+      if (result.error) {
+        controller.abort();
+        await Promise.all(pending.values());
+        throw fatalError ?? result.error;
       }
-    } catch (error) {
-      controller.abort();
-      throw error;
+      const index = indexes[position], verified = result.entry!;
+      if (verified.decision === "admitted" && admittedBytes + verified.byteCount! > config.maxTotalTextBytes) {
+        output[index] = excluded(verified, "total_bytes_limit");
+      } else {
+        output[index] = verified;
+        if (verified.decision === "admitted") admittedBytes += verified.byteCount!;
+      }
+      report();
+      fill();
     }
-  });
-  try { await Promise.all(workers); }
-  finally { signal?.removeEventListener("abort", cancel); }
-  let total = 0n;
-  for (let index = 0; index < output.length; index++) {
-    const entry = output[index];
-    if (entry.decision !== "admitted") continue;
-    const next = total + BigInt(entry.byteCount!);
-    if (next > BigInt(config.maxTotalTextBytes)) output[index] = excluded(entry, "total_bytes_limit");
-    else total = next;
+    return output;
+  } finally {
+    controller.abort();
+    await Promise.all(pending.values());
+    signal?.removeEventListener("abort", cancel);
   }
-  return output;
 }
 
 export async function buildRepositorySnapshot(input: {
   owner: string; repository: string; requestedRef: string | null; client: GitHubClient;
-  config: GitHubSnapshotConfig; signal?: AbortSignal;
+  config: GitHubSnapshotConfig; signal?: AbortSignal; testHooks?: SnapshotterTestHooks;
 }): Promise<SnapshotArtifact> {
   const metadata = repositoryMetadata(await input.client.getRepository(input.owner, input.repository, input.signal));
   const resolvedRef = input.requestedRef ?? metadata.defaultBranch;
@@ -221,6 +268,6 @@ export async function buildRepositorySnapshot(input: {
   for (const entry of inspected) {
     if (!isUnambiguouslyNormalizedPath(entry.path) && Buffer.byteLength(entry.path, "utf8") > MAX_SNAPSHOT_PATH_BYTES) throw new SnapshotError("malformed_github_response");
   }
-  const entries = await retrieveBlobs(applyAdmissionPolicy(inspected, input.config), input.client, metadata.canonicalOwner, metadata.canonicalRepository, input.config, input.signal);
+  const entries = await retrieveBlobs(applyAdmissionPolicy(inspected, input.config), input.client, metadata.canonicalOwner, metadata.canonicalRepository, input.config, input.signal, input.testHooks);
   return finalizeArtifact({ ...metadata, requestedRef: input.requestedRef, resolvedRef, ...commit, entries });
 }

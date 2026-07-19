@@ -11,7 +11,7 @@ const REPOSITORY = /^[A-Za-z0-9._-]{1,100}$/;
 
 function component(value: string, kind: "owner" | "repository" | "ref" | "sha"): string {
   const valid = kind === "owner" ? OWNER.test(value) : kind === "repository" ? REPOSITORY.test(value)
-    : kind === "sha" ? SHA.test(value) : value.length >= 1 && value.length <= 255 && !/[\u0000-\u001f\u007f]/.test(value);
+    : kind === "sha" ? SHA.test(value) : value.length >= 1 && value.length <= 255 && value !== "." && value !== ".." && !/[\u0000-\u001f\u007f]/.test(value);
   if (!valid) throw new SnapshotError("malformed_github_response");
   return encodeURIComponent(value);
 }
@@ -47,10 +47,87 @@ async function boundedBody(response: Response, maximum: number): Promise<Uint8Ar
   return body;
 }
 
-function parseJson(body: Uint8Array): unknown {
+function repositoryIdLexeme(text: string): string | null {
+  let index = 0;
+  const whitespace = () => { while (/\s/.test(text[index] ?? "")) index++; };
+  const jsonString = () => {
+    const start = index++;
+    while (index < text.length) {
+      if (text[index] === "\\") { index += 2; continue; }
+      if (text[index++] === '"') return text.slice(start, index);
+    }
+    throw new Error("unterminated JSON string");
+  };
+  const value = (): string => {
+    whitespace();
+    const start = index, first = text[index];
+    if (first === '"') { jsonString(); return text.slice(start, index); }
+    if (first === "{") {
+      index++; whitespace();
+      if (text[index] === "}") { index++; return text.slice(start, index); }
+      while (true) {
+        if (text[index] !== '"') throw new Error("invalid object");
+        jsonString(); whitespace(); if (text[index++] !== ":") throw new Error("invalid object");
+        value(); whitespace();
+        if (text[index] === "}") { index++; break; }
+        if (text[index++] !== ",") throw new Error("invalid object");
+        whitespace();
+      }
+      return text.slice(start, index);
+    }
+    if (first === "[") {
+      index++; whitespace();
+      if (text[index] === "]") { index++; return text.slice(start, index); }
+      while (true) {
+        value(); whitespace();
+        if (text[index] === "]") { index++; break; }
+        if (text[index++] !== ",") throw new Error("invalid array");
+      }
+      return text.slice(start, index);
+    }
+    while (index < text.length && !/[\s,}\]]/.test(text[index])) index++;
+    if (index === start) throw new Error("invalid value");
+    return text.slice(start, index);
+  };
+  whitespace();
+  if (text[index++] !== "{") throw new Error("repository metadata must be an object");
+  let found: string | null = null;
+  whitespace();
+  if (text[index] === "}") return null;
+  while (true) {
+    if (text[index] !== '"') throw new Error("invalid object key");
+    const key = JSON.parse(jsonString()) as unknown;
+    whitespace(); if (text[index++] !== ":") throw new Error("invalid object");
+    const raw = value();
+    if (key === "id") {
+      if (found !== null) throw new Error("duplicate id");
+      found = raw;
+    }
+    whitespace();
+    if (text[index] === "}") { index++; break; }
+    if (text[index++] !== ",") throw new Error("invalid object");
+    whitespace();
+  }
+  whitespace();
+  if (index !== text.length || (found !== null && (!/^[1-9]\d*$/.test(found) || BigInt(found) > 9_223_372_036_854_775_807n))) {
+    throw new Error("invalid repository id");
+  }
+  return found;
+}
+
+function parseJson(body: Uint8Array, repositoryMetadata = false): unknown {
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as unknown;
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(body);
+    const parsed = JSON.parse(text) as unknown;
+    if (!repositoryMetadata) return parsed;
+    const id = repositoryIdLexeme(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid repository metadata");
+    return id === null ? parsed : { ...parsed, id };
   } catch (cause) { throw new SnapshotError("malformed_github_response", cause); }
+}
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new SnapshotError("github_unavailable");
 }
 
 function transient(error: unknown): boolean {
@@ -95,7 +172,9 @@ export class GitHubClient {
     const url = `${GITHUB_API_ORIGIN}${path}`;
     if (new URL(url).origin !== GITHUB_API_ORIGIN) throw new SnapshotError("malformed_github_response");
     for (let attempt = 0; attempt < 3; attempt++) {
-      this.budget.claim();
+      assertNotAborted(signal);
+      this.budget.claim(signal);
+      assertNotAborted(signal);
       const timeout = Math.min(this.config.requestTimeoutMs, this.budget.remainingTime());
       const controller = new AbortController();
       let timedOut = false;
@@ -103,6 +182,7 @@ export class GitHubClient {
       const abort = () => controller.abort(signal?.reason);
       signal?.addEventListener("abort", abort, { once: true });
       try {
+        assertNotAborted(signal);
         const response = await this.fetchImplementation(url, {
           method: "GET", redirect: "manual", signal: controller.signal,
           headers: {
@@ -115,7 +195,7 @@ export class GitHubClient {
         this.rateMetadata = metadata(response.headers);
         if (response.status >= 300 && response.status < 400) throw new SnapshotError("github_redirect_rejected");
         const body = await boundedBody(response, maximumBody);
-        const value = body.byteLength ? parseJson(body) : null;
+        const value = body.byteLength ? parseJson(body, missingKind === "repository") : null;
         const retryable = response.status === 429 || response.status >= 500 || secondaryLimit(response.status, value);
         if (retryable && attempt < 2) {
           await this.backoff(attempt, this.rateMetadata.retryAfter, signal);
@@ -143,11 +223,17 @@ export class GitHubClient {
   }
 
   private async backoff(attempt: number, retryAfter: string | null, signal?: AbortSignal): Promise<void> {
+    assertNotAborted(signal);
     const headerMs = retryAfter && /^\d{1,4}$/.test(retryAfter) ? Number(retryAfter) * 1_000 : 0;
     const jittered = 250 * 2 ** attempt + Math.floor(this.time.random() * 100);
     const delay = Math.min(Math.max(headerMs, jittered), 5_000, this.budget.remainingTime() - 1);
     if (delay <= 0) throw new SnapshotError("snapshot_deadline_exceeded");
-    await this.time.sleep(delay, signal);
+    try { await this.time.sleep(delay, signal); }
+    catch (cause) {
+      if (signal?.aborted) throw new SnapshotError("github_unavailable", cause);
+      throw cause;
+    }
+    assertNotAborted(signal);
     this.budget.assertTime();
   }
 }
