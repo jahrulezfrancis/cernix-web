@@ -14,7 +14,9 @@ export type PlanningFailureCode =
   | "evidence_schema_invalid"
   | "evidence_context_invalid"
   | "skeptic_schema_invalid"
-  | "skeptic_context_invalid";
+  | "skeptic_context_invalid"
+  | "judge_schema_invalid"
+  | "judge_context_invalid";
 
 const PUBLIC_CODE: Record<PlanningFailureCode, ConstructorParameters<typeof ApplicationError>[0]> = {
   qwen_authentication_failed: "dependency_unavailable",
@@ -31,6 +33,8 @@ const PUBLIC_CODE: Record<PlanningFailureCode, ConstructorParameters<typeof Appl
   evidence_context_invalid: "internal_error",
   skeptic_schema_invalid: "internal_error",
   skeptic_context_invalid: "internal_error",
+  judge_schema_invalid: "internal_error",
+  judge_context_invalid: "internal_error",
 };
 
 export class PlanningError extends ApplicationError {
