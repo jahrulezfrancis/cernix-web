@@ -28,6 +28,8 @@
     "worker:snapshot:once": "tsx server/worker/run-snapshot-worker.ts --once",
     "worker:planning": "tsx server/worker/run-planning-worker.ts",
     "worker:planning:once": "tsx server/worker/run-planning-worker.ts --once",
+    "worker:evidence": "tsx server/worker/run-evidence-worker.ts",
+    "worker:evidence:once": "tsx server/worker/run-evidence-worker.ts --once",
     "db:migrate": "tsx server/db/migrate-cli.ts up",
     "db:rollback": "tsx server/db/migrate-cli.ts down"
   },

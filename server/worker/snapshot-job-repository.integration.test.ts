@@ -57,6 +57,7 @@ describe.sequential("durable snapshot job orchestration", () => {
     const { job } = await started();
     await rollbackOne(db);
     await rollbackOne(db);
+    await rollbackOne(db);
     const legacy = (await sql<{ id: string; attempt: number; status: string }>`select id, attempt, status from investigation_jobs where id=${job.id}`.execute(db)).rows[0];
     expect(legacy).toEqual({ id: job.id, attempt: 0, status: "queued" });
     await sql`alter table investigation_jobs rename constraint investigation_jobs_queued_lease_check to investigation_jobs_check`.execute(db);
