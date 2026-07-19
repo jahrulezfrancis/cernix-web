@@ -84,6 +84,48 @@ or command line. The maximum attempt count is copied into each new job so later
 configuration changes do not alter existing budgets. Deployment supervision,
 distributed metrics, alerts, and hosted worker configuration remain deferred.
 
+## Durable investigation planning worker
+
+After snapshot success, Cernix enqueues an `investigation_planning` job and enters
+`planning`. The planning worker uses the same PostgreSQL lease, heartbeat, retry, and
+fencing model as the snapshot worker. Planning work calls the server-only Qwen adapter
+over a constant trusted origin and validates model output against versioned plan
+schemas before persistence.
+
+The planner receives only a bounded snapshot summary: manifest hash, commit SHA,
+admitted-path samples, extension counts, and exclusion statistics. It does not receive
+admitted file bodies; evidence retrieval remains deferred to Milestone 8.
+
+A persisted plan stores verification obligations, evidence tasks, dependency edges,
+model/prompt versions, and a canonical JSON artifact. Successful planning atomically
+moves `planning` to `investigating` only after every investigation claim has a complete
+validated plan with at least one obligation and one evidence task. Retryable provider
+failures keep the investigation in `planning`; terminal failures move `planning` to
+`failed`.
+
+Run the planning worker separately:
+
+```bash
+npm run worker:planning
+npm run worker:planning:once
+```
+
+Planning worker configuration mirrors the snapshot worker pattern:
+
+| Setting | Default | Range |
+|---|---:|---:|
+| `CERNIX_PLANNING_LEASE_SECONDS` | 120 | 30–900 |
+| `CERNIX_PLANNING_HEARTBEAT_SECONDS` | 30 | 1–449 and less than half the lease |
+| `CERNIX_PLANNING_POLL_MS` | 1,000 | 250–30,000 |
+| `CERNIX_PLANNING_MAX_ATTEMPTS` | 4 | 1–10 |
+| `CERNIX_PLANNING_RETRY_BASE_SECONDS` | 5 | 1–300 |
+| `CERNIX_PLANNING_RETRY_MAX_SECONDS` | 300 | 1–3,600 and at least the base |
+
+Qwen settings are server-only. Opt-in live provider smoke is available through
+`npm run test:github-live` for GitHub and the Qwen live-smoke test when
+`CERNIX_QWEN_LIVE_SMOKE=1` is set with a valid `QWEN_API_KEY`. Public API exposure,
+frontend cutover, and evidence retrieval remain deferred.
+
 ## Immutable public GitHub snapshots
 
 An investigation in `snapshotting` can be ingested as one immutable repository

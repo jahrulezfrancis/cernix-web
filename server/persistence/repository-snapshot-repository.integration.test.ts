@@ -72,6 +72,7 @@ describe.sequential("immutable repository snapshot persistence", () => {
       .where("type", "!=", "repository_snapshot_persisted").executeTakeFirstOrThrow()).count);
     await rollbackOne(db);
     await rollbackOne(db);
+    await rollbackOne(db);
     expect((await sql`select to_regclass('public.repository_snapshots') name`.execute(db)).rows[0]).toMatchObject({ name: null });
     expect(Number((await db.selectFrom("investigation_events").select(db.fn.countAll().as("count"))
       .where("type", "!=", "repository_snapshot_persisted").executeTakeFirstOrThrow()).count)).toBe(legacyBefore);

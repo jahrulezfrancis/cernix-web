@@ -56,6 +56,7 @@ describe.sequential("durable snapshot job orchestration", () => {
   it("migrates populated queued jobs down and up while preserving claimability", async () => {
     const { job } = await started();
     await rollbackOne(db);
+    await rollbackOne(db);
     const legacy = (await sql<{ id: string; attempt: number; status: string }>`select id, attempt, status from investigation_jobs where id=${job.id}`.execute(db)).rows[0];
     expect(legacy).toEqual({ id: job.id, attempt: 0, status: "queued" });
     await sql`alter table investigation_jobs rename constraint investigation_jobs_queued_lease_check to investigation_jobs_check`.execute(db);
@@ -204,6 +205,9 @@ describe.sequential("durable snapshot job orchestration", () => {
     expect(claimed.kind).toBe("claimed"); if (claimed.kind !== "claimed") return;
     expect(await jobs.completeSuccess(job.id, claimed.claim.leaseToken)).toEqual({ kind: "updated", status: "succeeded" });
     expect((await investigations.getInvestigation(investigation.id)).status).toBe("planning");
+    const planningJob = await db.selectFrom("investigation_jobs").selectAll()
+      .where("investigation_id", "=", investigation.id).where("kind", "=", "investigation_planning").executeTakeFirst();
+    expect(planningJob?.status).toBe("queued");
     expect(await jobs.completeSuccess(job.id, claimed.claim.leaseToken)).toEqual({ kind: "already_terminal", status: "succeeded" });
     const events = await db.selectFrom("investigation_events").selectAll().where("investigation_id", "=", investigation.id)
       .where("type", "=", "lifecycle_transitioned").execute();
