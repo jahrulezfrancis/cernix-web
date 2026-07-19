@@ -4,33 +4,27 @@ import { canTransitionBackendLifecycle, type BackendLifecycleStatus } from "@/li
 import type { Database, InvestigationJobsTable } from "@/server/db/types";
 import { classifyDatabaseError } from "@/server/db/errors";
 import { ApplicationError } from "@/server/errors";
-import { loadPersistedSnapshot } from "@/server/persistence/repository-snapshot-repository";
+import { loadPersistedPlan } from "@/server/persistence/investigation-plan-repository";
 import { PublicInvestigationEventSchema } from "@/server/persistence/events";
-import { readPlanningJobMaxAttempts } from "./planning-worker-config";
 
-export type SnapshotJobStatus = InvestigationJobsTable["status"];
-export type SnapshotJobClaim = Readonly<{
-  jobId: string; investigationId: string; attemptNumber: number; maxAttempts: number;
-  leaseToken: string; leaseExpiresAt: Date;
+export type PlanningJobStatus = InvestigationJobsTable["status"];
+export type PlanningJobClaim = Readonly<{
+  jobId: string; investigationId: string; attemptNumber: number; attemptId: string;
+  maxAttempts: number; leaseToken: string; leaseExpiresAt: Date;
 }>;
 export type ClaimResult =
-  | Readonly<{ kind: "claimed"; claim: SnapshotJobClaim }>
+  | Readonly<{ kind: "claimed"; claim: PlanningJobClaim }>
   | Readonly<{ kind: "idle" }>
   | Readonly<{ kind: "reconciled"; jobId: string; status: "succeeded" | "failed" | "cancelled" }>;
 export type MutationResult =
-  | Readonly<{ kind: "updated"; status: SnapshotJobStatus }>
+  | Readonly<{ kind: "updated"; status: PlanningJobStatus }>
   | Readonly<{ kind: "already_terminal"; status: "succeeded" | "failed" | "cancelled" }>
   | Readonly<{ kind: "lease_lost" }>
   | Readonly<{ kind: "not_found" }>
   | Readonly<{ kind: "lifecycle_conflict" }>;
 
-export type SnapshotJobRecord = Readonly<{
-  id: string; investigationId: string; status: SnapshotJobStatus; attemptCount: number;
-  maxAttempts: number; availableAt: Date; leaseExpiresAt: Date | null; failureCode: string | null;
-}>;
-
 type JobRow = {
-  id: string; investigation_id: string; status: SnapshotJobStatus; attempt_count: number;
+  id: string; investigation_id: string; status: PlanningJobStatus; attempt_count: number;
   max_attempts: number; available_at: Date; lease_owner: string | null; lease_token: string | null;
   lease_expires_at: Date | null; last_heartbeat_at: Date | null; started_at: Date | null;
   completed_at: Date | null; failed_at: Date | null; failure_code: string | null;
@@ -39,10 +33,10 @@ type JobRow = {
 type Db = Kysely<Database> | Transaction<Database>;
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CODE = /^[a-z][a-z0-9_]{0,63}$/;
-const LATER_NONTERMINAL = new Set<BackendLifecycleStatus>(["planning", "investigating", "challenging", "reinvestigating", "judging"]);
+const LATER_NONTERMINAL = new Set<BackendLifecycleStatus>(["investigating", "challenging", "reinvestigating", "judging"]);
 const SUCCESS_LIFECYCLE = new Set<BackendLifecycleStatus>([...LATER_NONTERMINAL, "completed", "completed_with_limitations"]);
 
-function terminal(status: SnapshotJobStatus): status is "succeeded" | "failed" | "cancelled" {
+function terminal(status: PlanningJobStatus): status is "succeeded" | "failed" | "cancelled" {
   return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 function validOwner(owner: string): void {
@@ -71,7 +65,7 @@ async function appendTransition(tx: Transaction<Database>, investigationId: stri
     stage: event.stage, public_payload: JSON.stringify(event.payload), created_at: now }).execute();
 }
 async function transitionInvestigation(tx: Transaction<Database>, row: { id: string; status: BackendLifecycleStatus; version: number;
-  started_at: Date | null; completed_at: Date | null }, to: "planning" | "failed", now: Date, failureCode?: string) {
+  started_at: Date | null; completed_at: Date | null }, to: "investigating" | "failed", now: Date, failureCode?: string) {
   if (row.status === to) return;
   if (!canTransitionBackendLifecycle(row.status, to)) throw new ApplicationError("invalid_lifecycle_transition", {});
   await tx.updateTable("investigations").set({ status: to, version: sql`version + 1`, updated_at: now,
@@ -81,7 +75,7 @@ async function transitionInvestigation(tx: Transaction<Database>, row: { id: str
 }
 async function finishExpiredAttempt(tx: Transaction<Database>, job: JobRow, now: Date): Promise<void> {
   if (job.status !== "leased" || !job.lease_token) return;
-  requireOne(await tx.updateTable("snapshot_job_attempts").set({ status: "lease_expired", finished_at: now,
+  requireOne(await tx.updateTable("planning_job_attempts").set({ status: "lease_expired", finished_at: now,
     failure_code: "lease_expired", next_available_at: null }).where("job_id", "=", job.id)
     .where("lease_token", "=", job.lease_token).where("status", "=", "leased").executeTakeFirst());
 }
@@ -92,37 +86,17 @@ async function clearToTerminal(tx: Transaction<Database>, job: JobRow, status: "
     failed_at: status === "failed" ? now : null, failure_code: code,
     started_at: status === "succeeded" ? job.started_at ?? now : job.started_at, updated_at: now }).where("id", "=", job.id).execute();
 }
-async function enqueuePlanningJob(tx: Transaction<Database>, investigationId: string, now: Date, uuid: () => string): Promise<void> {
-  const active = await tx.selectFrom("investigation_jobs").select("id")
-    .where("investigation_id", "=", investigationId).where("kind", "=", "investigation_planning")
-    .where("status", "in", ["queued", "leased", "retry_wait", "succeeded"]).executeTakeFirst();
-  if (active) return;
-  await tx.insertInto("investigation_jobs").values({
-    id: uuid(), investigation_id: investigationId, kind: "investigation_planning", status: "queued",
-    max_attempts: readPlanningJobMaxAttempts(), available_at: now, lease_owner: null, lease_token: null,
-    lease_expires_at: null, last_heartbeat_at: null, started_at: null, completed_at: null, failed_at: null,
-    failure_code: null, created_at: now, updated_at: now,
-  }).execute();
-  const event = PublicInvestigationEventSchema.parse({
-    type: "investigation_started", stage: "planning", payload: { jobKind: "investigation_planning" },
-  });
-  await tx.insertInto("investigation_events").values({
-    investigation_id: investigationId, type: event.type, stage: event.stage,
-    public_payload: JSON.stringify(event.payload), created_at: now,
-  }).execute();
-}
-async function advanceToPlanning(tx: Transaction<Database>, investigation: { id: string; status: BackendLifecycleStatus; version: number;
-  started_at: Date | null; completed_at: Date | null }, now: Date, uuid: () => string): Promise<void> {
-  if (investigation.status === "planning") {
-    await enqueuePlanningJob(tx, investigation.id, now, uuid);
-    return;
-  }
-  if (investigation.status !== "snapshotting") return;
-  await transitionInvestigation(tx, investigation, "planning", now);
-  await enqueuePlanningJob(tx, investigation.id, now, uuid);
+async function planIsComplete(tx: Transaction<Database>, investigationId: string): Promise<boolean> {
+  const plan = await loadPersistedPlan(tx, investigationId);
+  if (!plan) return false;
+  const claims = await tx.selectFrom("manual_claims").select("id").where("investigation_id", "=", investigationId).execute();
+  if (plan.artifact.claimPlans.length !== claims.length) return false;
+  const claimIds = new Set(claims.map((claim) => claim.id));
+  return plan.artifact.claimPlans.every((claimPlan) => claimIds.has(claimPlan.claimId) &&
+    claimPlan.obligations.length >= 1 && claimPlan.evidenceTasks.length >= 1);
 }
 
-export class SnapshotJobRepository {
+export class PlanningJobRepository {
   constructor(private readonly db: Kysely<Database>, private readonly uuid: () => string = randomUUID) {}
 
   async claimNext(options: { workerOwner: string; leaseSeconds: number }): Promise<ClaimResult> {
@@ -134,7 +108,7 @@ export class SnapshotJobRepository {
             lease_token, lease_expires_at, last_heartbeat_at, started_at, completed_at, failed_at,
             failure_code, created_at, updated_at
           from investigation_jobs
-          where kind = 'repository_snapshot' and (
+          where kind = 'investigation_planning' and (
             (status in ('queued','retry_wait') and available_at <= transaction_timestamp()) or
             (status = 'leased' and lease_expires_at <= transaction_timestamp())
           )
@@ -147,24 +121,27 @@ export class SnapshotJobRepository {
           .where("id", "=", selected.investigation_id).forUpdate().executeTakeFirst();
         if (!investigation) return { kind: "reconciled", jobId: selected.id, status: "cancelled" };
         await finishExpiredAttempt(tx, selected, now);
-        const snapshotExists = Boolean(await tx.selectFrom("repository_snapshots").select("id")
-          .where("investigation_id", "=", selected.investigation_id).executeTakeFirst());
+        const planComplete = await planIsComplete(tx, selected.investigation_id);
 
         if (investigation.status === "failed" || investigation.status === "completed" || investigation.status === "completed_with_limitations") {
           await clearToTerminal(tx, selected, "cancelled", investigation.status === "failed" ? "investigation_failed" : "investigation_terminal", now);
           return { kind: "reconciled", jobId: selected.id, status: "cancelled" };
         }
-        if (investigation.status !== "snapshotting" && !snapshotExists) {
-          await clearToTerminal(tx, selected, "cancelled", "snapshot_missing", now);
+        if (investigation.status !== "planning" && !planComplete) {
+          await clearToTerminal(tx, selected, "cancelled", "plan_missing", now);
           return { kind: "reconciled", jobId: selected.id, status: "cancelled" };
         }
-        if (snapshotExists && (LATER_NONTERMINAL.has(investigation.status) || selected.attempt_count >= selected.max_attempts)) {
-          await advanceToPlanning(tx, investigation, now, this.uuid.bind(this));
+        if (planComplete) {
+          if (investigation.status === "planning") await transitionInvestigation(tx, investigation, "investigating", now);
+          else if (!LATER_NONTERMINAL.has(investigation.status)) {
+            await clearToTerminal(tx, selected, "cancelled", "plan_complete_unexpected_state", now);
+            return { kind: "reconciled", jobId: selected.id, status: "cancelled" };
+          }
           await clearToTerminal(tx, selected, "succeeded", null, now);
           return { kind: "reconciled", jobId: selected.id, status: "succeeded" };
         }
         if (selected.attempt_count >= selected.max_attempts) {
-          if (investigation.status === "snapshotting") await transitionInvestigation(tx, investigation, "failed", now, "attempts_exhausted");
+          if (investigation.status === "planning") await transitionInvestigation(tx, investigation, "failed", now, "attempts_exhausted");
           await clearToTerminal(tx, selected, "failed", "attempts_exhausted", now);
           return { kind: "reconciled", jobId: selected.id, status: "failed" };
         }
@@ -175,12 +152,13 @@ export class SnapshotJobRepository {
           lease_expires_at: sql`transaction_timestamp() + make_interval(secs => ${options.leaseSeconds})`,
           started_at: selected.started_at ?? now, completed_at: null, failed_at: null, failure_code: null,
           updated_at: now }).where("id", "=", selected.id).returning("lease_expires_at").executeTakeFirstOrThrow();
-        await tx.insertInto("snapshot_job_attempts").values({ job_id: selected.id,
+        const attempt = await tx.insertInto("planning_job_attempts").values({ job_id: selected.id,
           investigation_id: selected.investigation_id, attempt_number: attemptNumber, lease_token: leaseToken,
           worker_owner: options.workerOwner, status: "leased", started_at: now, last_heartbeat_at: now,
-          finished_at: null, failure_code: null, next_available_at: null }).execute();
+          finished_at: null, failure_code: null, next_available_at: null }).returning("id").executeTakeFirstOrThrow();
         return { kind: "claimed", claim: { jobId: selected.id, investigationId: selected.investigation_id,
-          attemptNumber, maxAttempts: selected.max_attempts, leaseToken, leaseExpiresAt: updated.lease_expires_at! } };
+          attemptNumber, attemptId: attempt.id, maxAttempts: selected.max_attempts, leaseToken,
+          leaseExpiresAt: updated.lease_expires_at! } };
       });
     } catch (error) { throw classifyDatabaseError(error); }
   }
@@ -195,7 +173,7 @@ export class SnapshotJobRepository {
           .where("id", "=", jobId).where("status", "=", "leased").where("lease_token", "=", leaseToken)
           .where("lease_expires_at", ">", now).returning("id").executeTakeFirst();
         if (!updated) return this.missedMutation(tx, jobId);
-        requireOne(await tx.updateTable("snapshot_job_attempts").set({ last_heartbeat_at: now }).where("job_id", "=", jobId)
+        requireOne(await tx.updateTable("planning_job_attempts").set({ last_heartbeat_at: now }).where("job_id", "=", jobId)
           .where("lease_token", "=", leaseToken).where("status", "=", "leased").executeTakeFirst());
         return { kind: "updated", status: "leased" };
       });
@@ -211,7 +189,7 @@ export class SnapshotJobRepository {
           const investigation = await tx.selectFrom("investigations").select("status")
             .where("id", "=", locked.investigation_id).forUpdate().executeTakeFirst();
           if (!investigation || !SUCCESS_LIFECYCLE.has(investigation.status) ||
-              !await loadPersistedSnapshot(tx, locked.investigation_id)) return { kind: "lifecycle_conflict" };
+              !await planIsComplete(tx, locked.investigation_id)) return { kind: "lifecycle_conflict" };
           return { kind: "already_terminal", status: "succeeded" };
         }
         if (locked.status === "failed" || locked.status === "cancelled") return { kind: "already_terminal", status: locked.status };
@@ -220,11 +198,10 @@ export class SnapshotJobRepository {
         const investigation = await tx.selectFrom("investigations").select(["id", "status", "version", "started_at", "completed_at"])
           .where("id", "=", locked.investigation_id).forUpdate().executeTakeFirst();
         if (!investigation) return { kind: "not_found" };
-        if (!await loadPersistedSnapshot(tx, locked.investigation_id)) return { kind: "lifecycle_conflict" };
-        if (investigation.status === "snapshotting" || investigation.status === "planning") {
-          await advanceToPlanning(tx, investigation, now, this.uuid.bind(this));
-        } else if (!LATER_NONTERMINAL.has(investigation.status)) return { kind: "lifecycle_conflict" };
-        requireOne(await tx.updateTable("snapshot_job_attempts").set({ status: "succeeded", finished_at: now })
+        if (!await planIsComplete(tx, locked.investigation_id)) return { kind: "lifecycle_conflict" };
+        if (investigation.status === "planning") await transitionInvestigation(tx, investigation, "investigating", now);
+        else if (!LATER_NONTERMINAL.has(investigation.status)) return { kind: "lifecycle_conflict" };
+        requireOne(await tx.updateTable("planning_job_attempts").set({ status: "succeeded", finished_at: now })
           .where("job_id", "=", jobId).where("lease_token", "=", leaseToken).where("status", "=", "leased").executeTakeFirst());
         await clearToTerminal(tx, locked, "succeeded", null, now);
         return { kind: "updated", status: "succeeded" };
@@ -243,7 +220,7 @@ export class SnapshotJobRepository {
         if (!this.ownsLiveLease(locked, leaseToken, now)) return { kind: "lease_lost" };
         if (locked.attempt_count >= locked.max_attempts) return { kind: "lifecycle_conflict" };
         const next = (await sql<{ next: Date }>`select transaction_timestamp() + make_interval(secs => ${delaySeconds}) as next`.execute(tx)).rows[0].next;
-        requireOne(await tx.updateTable("snapshot_job_attempts").set({ status: "retry_scheduled", finished_at: now,
+        requireOne(await tx.updateTable("planning_job_attempts").set({ status: "retry_scheduled", finished_at: now,
           failure_code: failureCode, next_available_at: next }).where("job_id", "=", jobId)
           .where("lease_token", "=", leaseToken).where("status", "=", "leased").executeTakeFirst());
         await tx.updateTable("investigation_jobs").set({ status: "retry_wait", available_at: next,
@@ -266,9 +243,9 @@ export class SnapshotJobRepository {
         const investigation = await tx.selectFrom("investigations").select(["id", "status", "version", "started_at", "completed_at"])
           .where("id", "=", locked.investigation_id).forUpdate().executeTakeFirst();
         if (!investigation) return { kind: "not_found" };
-        if (investigation.status === "snapshotting") await transitionInvestigation(tx, investigation, "failed", now, failureCode);
+        if (investigation.status === "planning") await transitionInvestigation(tx, investigation, "failed", now, failureCode);
         else if (investigation.status !== "failed") return { kind: "lifecycle_conflict" };
-        requireOne(await tx.updateTable("snapshot_job_attempts").set({ status: "failed", finished_at: now, failure_code: failureCode })
+        requireOne(await tx.updateTable("planning_job_attempts").set({ status: "failed", finished_at: now, failure_code: failureCode })
           .where("job_id", "=", jobId).where("lease_token", "=", leaseToken).where("status", "=", "leased").executeTakeFirst());
         await clearToTerminal(tx, locked, "failed", failureCode, now);
         return { kind: "updated", status: "failed" };
@@ -276,25 +253,7 @@ export class SnapshotJobRepository {
     } catch (error) { throw classifyDatabaseError(error); }
   }
 
-  async cancel(jobId: string, reasonCode: string, leaseToken?: string): Promise<MutationResult> {
-    validCode(reasonCode);
-    try {
-      return await this.db.transaction().execute(async (tx) => {
-        const locked = await this.lockedJob(tx, jobId);
-        if (!locked) return { kind: "not_found" };
-        if (terminal(locked.status)) return { kind: "already_terminal", status: locked.status };
-        const now = await databaseNow(tx);
-        if (locked.status === "leased" && (!leaseToken || !this.ownsLiveLease(locked, leaseToken, now))) return { kind: "lease_lost" };
-        if (locked.status === "leased" && leaseToken) requireOne(await tx.updateTable("snapshot_job_attempts").set({ status: "cancelled",
-          finished_at: now, failure_code: reasonCode }).where("job_id", "=", jobId).where("lease_token", "=", leaseToken)
-          .where("status", "=", "leased").executeTakeFirst());
-        await clearToTerminal(tx, locked, "cancelled", reasonCode, now);
-        return { kind: "updated", status: "cancelled" };
-      });
-    } catch (error) { throw classifyDatabaseError(error); }
-  }
-
-  async getJob(jobId: string): Promise<SnapshotJobRecord | null> {
+  async getJob(jobId: string) {
     try {
       const row = await this.db.selectFrom("investigation_jobs").selectAll().where("id", "=", jobId).executeTakeFirst();
       return row ? { id: row.id, investigationId: row.investigation_id, status: row.status,
