@@ -198,8 +198,43 @@ export class InvestigationRepository {
     const id = InvestigationIdSchema.parse(idRaw);
     try { return await mapInvestigation(this.db, id); } catch (error) { return domainError(error); }
   }
+
+  async listInvestigations(limitRaw = 50) {
+    const limit = Math.min(boundEventLimit(limitRaw), 50);
+    try {
+      const rows = await this.db.selectFrom("investigations")
+        .innerJoin("manual_claims", "manual_claims.investigation_id", "investigations.id")
+        .select([
+          "investigations.id", "investigations.status", "repository_owner", "repository_name",
+          "repository_canonical_url", "requested_ref", "version", "investigations.created_at",
+          "investigations.updated_at", "started_at", "completed_at", "failure_code",
+          "manual_claims.id as claim_id", "statement", "preserved_qualifiers", "approved_at",
+        ])
+        .orderBy("investigations.updated_at", "desc")
+        .orderBy("investigations.id", "desc")
+        .limit(limit)
+        .execute();
+      const reportIds = rows.length
+        ? await this.db.selectFrom("investigation_reports").select("investigation_id")
+          .where("investigation_id", "in", rows.map((row) => row.id)).execute()
+        : [];
+      const reports = new Set(reportIds.map((row) => row.investigation_id));
+      return rows.map((row) => ({
+        model: {
+          id: row.id, status: row.status, repositoryOwner: row.repository_owner,
+          repositoryName: row.repository_name, repositoryCanonicalUrl: row.repository_canonical_url,
+          requestedRef: row.requested_ref, version: row.version, createdAt: row.created_at,
+          updatedAt: row.updated_at, startedAt: row.started_at, completedAt: row.completed_at,
+          failureCode: row.failure_code, claim: { id: row.claim_id, statement: row.statement,
+            preservedQualifiers: row.preserved_qualifiers, approvedAt: row.approved_at },
+        } satisfies InvestigationReadModel,
+        hasReport: reports.has(row.id),
+      }));
+    } catch (error) { return domainError(error); }
+  }
+
   async getEvents(idRaw: unknown, after?: string, limit = 50) {
-    const id = InvestigationIdSchema.parse(idRaw), cursor = parseEventCursor(after), bounded = boundEventLimit(limit);
+    const id = InvestigationIdSchema.parse(idRaw), cursor = parseEventCursor(after), bounded = Math.min(boundEventLimit(limit), 50);
     await this.getInvestigation(id);
     try {
       const events = await this.db.selectFrom("investigation_events").selectAll()

@@ -115,13 +115,103 @@ export type ClaimApprovalRequest = z.infer<typeof ClaimApprovalRequestSchema>;
 export const StartInvestigationResponseSchema = z
   .object({
     investigationId: InvestigationIdSchema,
-    status: z.literal("snapshotting"),
+    status: BackendLifecycleStatusSchema,
     eventCursor: z.number().int().nonnegative(),
   })
   .strict();
 export type StartInvestigationResponse = z.infer<
   typeof StartInvestigationResponseSchema
 >;
+
+const isoDateTime = z.iso.datetime({ offset: true });
+
+export const InvestigationClaimResponseSchema = z
+  .object({
+    id: z.uuid(),
+    statement: z.string(),
+    preservedQualifiers: z.array(z.string()),
+    approvedAt: isoDateTime.nullable(),
+  })
+  .strict();
+export type InvestigationClaimResponse = z.infer<typeof InvestigationClaimResponseSchema>;
+
+export const InvestigationRepositoryResponseSchema = z
+  .object({
+    owner: z.string(),
+    name: z.string(),
+    canonicalUrl: z.string().url(),
+    requestedRef: z.string().nullable(),
+  })
+  .strict();
+
+export const InvestigationResponseSchema = z
+  .object({
+    id: InvestigationIdSchema,
+    status: BackendLifecycleStatusSchema,
+    repository: InvestigationRepositoryResponseSchema,
+    version: z.number().int().nonnegative(),
+    createdAt: isoDateTime,
+    updatedAt: isoDateTime,
+    startedAt: isoDateTime.nullable(),
+    completedAt: isoDateTime.nullable(),
+    failureCode: z.string().nullable(),
+    claim: InvestigationClaimResponseSchema,
+  })
+  .strict();
+export type InvestigationResponse = z.infer<typeof InvestigationResponseSchema>;
+
+export const InvestigationSummarySchema = z
+  .object({
+    id: InvestigationIdSchema,
+    status: BackendLifecycleStatusSchema,
+    repository: InvestigationRepositoryResponseSchema,
+    claimStatement: z.string(),
+    createdAt: isoDateTime,
+    updatedAt: isoDateTime,
+    startedAt: isoDateTime.nullable(),
+    completedAt: isoDateTime.nullable(),
+    hasReport: z.boolean(),
+  })
+  .strict();
+export type InvestigationSummary = z.infer<typeof InvestigationSummarySchema>;
+
+export const InvestigationListResponseSchema = z
+  .object({
+    investigations: z.array(InvestigationSummarySchema).max(50),
+  })
+  .strict();
+export type InvestigationListResponse = z.infer<typeof InvestigationListResponseSchema>;
+
+export const InvestigationEventResponseSchema = z
+  .object({
+    sequence: z.number().int().positive(),
+    type: z.string().min(1).max(64),
+    stage: BackendLifecycleStatusSchema,
+    publicPayload: z.unknown(),
+    createdAt: isoDateTime,
+  })
+  .strict();
+export type InvestigationEventResponse = z.infer<typeof InvestigationEventResponseSchema>;
+
+export const InvestigationEventsResponseSchema = z
+  .object({
+    events: z.array(InvestigationEventResponseSchema).max(50),
+    nextCursor: z.number().int().nonnegative(),
+  })
+  .strict();
+export type InvestigationEventsResponse = z.infer<typeof InvestigationEventsResponseSchema>;
+
+export const InvestigationReportResponseSchema = z
+  .object({
+    investigationId: InvestigationIdSchema,
+    completionDisposition: z.enum(["completed", "completed_with_limitations"]),
+    artifactHashSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    artifact: z.unknown(),
+  })
+  .strict();
+export type InvestigationReportResponse = z.infer<typeof InvestigationReportResponseSchema>;
+
+export const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
 export const PublicErrorCodeSchema = z.enum([
   "malformed_input",

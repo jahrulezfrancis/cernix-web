@@ -6,7 +6,9 @@ import { AppShell } from "@/components/layout/app-shell";
 import { DASHBOARD_INVESTIGATIONS } from "@/lib/mock-data";
 import { VerdictBadge } from "@/components/ui/verdict-badge";
 import { dashboardRoute } from "@/lib/dashboard-routing";
-import { getStorageHealth, listInvestigations } from "@/lib/investigation-repository";
+import { getStorageHealth, listInvestigations as listLegacyInvestigations } from "@/lib/investigation-repository";
+import { ApiRequestError, listInvestigations as listBackendInvestigations } from "@/lib/api/investigation-client";
+import { investigationSummaryToUi } from "@/lib/api/backend-investigation-adapter";
 import { CommitBadge } from "@/components/ui/commit-badge";
 import { formatDate, formatDuration } from "@/lib/utils";
 import {
@@ -77,7 +79,15 @@ function VerdictBar({ claims }: { claims: Investigation["claims"] }) {
   );
 }
 
-export function InvestigationRow({ inv, demo = false }: { inv: Investigation; demo?: boolean }) {
+export function InvestigationRow({
+  inv,
+  demo = false,
+  prototype = false,
+}: {
+  inv: Investigation;
+  demo?: boolean;
+  prototype?: boolean;
+}) {
   const status = STATUS_CONFIG[inv.status];
   const submissionLabel = SUBMISSION_LABELS[inv.submission.type];
   const isCompleted = inv.status === "completed" || inv.status === "completed_with_limitations";
@@ -99,6 +109,7 @@ export function InvestigationRow({ inv, demo = false }: { inv: Investigation; de
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             {demo && <span className="rounded border border-[#1E4560] px-1.5 py-0.5 font-mono text-[9px] text-[#4F7590]">Demo</span>}
+            {prototype && <span className="rounded border border-[#1E4560] px-1.5 py-0.5 font-mono text-[9px] text-[#4F7590]">Local prototype</span>}
             <span className="font-mono text-sm font-medium text-[#E9F3F8]">
               {inv.project.owner}/{inv.project.repo}
             </span>
@@ -157,16 +168,35 @@ export default function InvestigationsPage() {
   const [persisted, setPersisted] = useState<Investigation[]>([]);
   const [loading, setLoading] = useState(true);
   const [storageMessage, setStorageMessage] = useState("");
+  const [apiMessage, setApiMessage] = useState("");
+  const [legacyIds, setLegacyIds] = useState<Set<string>>(new Set());
   useEffect(() => {
-    setPersisted(listInvestigations());
-    const currentHealth = getStorageHealth();
-    setStorageMessage(currentHealth.status === "available" ? "" : currentHealth.message);
-    setLoading(false);
+    let cancelled = false;
+    (async () => {
+      const legacy = listLegacyInvestigations();
+      const legacyIdSet = new Set(legacy.map((investigation) => investigation.id));
+      let backend: Investigation[] = [];
+      try {
+        const result = await listBackendInvestigations();
+        backend = result.investigations.map(investigationSummaryToUi);
+      } catch (error) {
+        if (!cancelled) {
+          setApiMessage(error instanceof ApiRequestError ? error.message : "Unable to load backend investigations.");
+        }
+      }
+      if (cancelled) return;
+      setLegacyIds(legacyIdSet);
+      setPersisted([...backend, ...legacy]);
+      const currentHealth = getStorageHealth();
+      setStorageMessage(currentHealth.status === "available" ? "" : currentHealth.message);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
   }, []);
   const persistedIds = new Set(persisted.map((investigation) => investigation.id));
   const demoInvestigations: Investigation[] = DASHBOARD_INVESTIGATIONS.filter((investigation) => !persistedIds.has(investigation.id));
   const investigations = [...persisted, ...demoInvestigations];
-  const metricInvestigations = persisted;
+  const metricInvestigations = persisted.filter((investigation) => !legacyIds.has(investigation.id));
   const totalClaims = metricInvestigations.reduce((total, investigation) => total + investigation.claims.length, 0);
   const criticalUnsupported = metricInvestigations.reduce(
     (total, investigation) => total + investigation.claims.filter((claim) => claim.criticality === "critical" && (claim.verdict === "unverified" || claim.verdict === "contradicted")).length,
@@ -178,6 +208,7 @@ export default function InvestigationsPage() {
     <AppShell title="Investigations">
       <div className="p-6">
         {storageMessage && <p className="mb-4 rounded border border-[#FFC94D]/30 bg-[#3A2A0E] px-3 py-2 font-mono text-xs text-[#FFC94D]" role="status">{storageMessage}</p>}
+        {apiMessage && <p className="mb-4 rounded border border-[#FFC94D]/30 bg-[#3A2A0E] px-3 py-2 font-mono text-xs text-[#FFC94D]" role="status">{apiMessage}</p>}
         {loading && <p className="mb-4 font-mono text-xs text-[#86ADC2]">Loading persisted investigations...</p>}
         {/* Header */}
         <div className="mb-6 flex items-center justify-between gap-4">
@@ -251,7 +282,12 @@ export default function InvestigationsPage() {
 
           {/* Rows */}
           {investigations.map((inv) => (
-            <InvestigationRow key={inv.id} inv={inv} demo={!persistedIds.has(inv.id)} />
+            <InvestigationRow
+              key={inv.id}
+              inv={inv}
+              demo={!persistedIds.has(inv.id)}
+              prototype={legacyIds.has(inv.id)}
+            />
           ))}
         </div>
       </div>

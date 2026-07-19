@@ -10,6 +10,9 @@ import {
   PUBLIC_ERROR_DEFINITIONS,
   PUBLIC_VALIDATION_ISSUE_MESSAGES,
   PublicSafeErrorEnvelopeSchema,
+  InvestigationEventsResponseSchema,
+  InvestigationListResponseSchema,
+  InvestigationResponseSchema,
   StartInvestigationResponseSchema,
   TERMINAL_BACKEND_STATUSES,
   canTransitionBackendLifecycle,
@@ -41,6 +44,11 @@ describe("investigation API contracts", () => {
       status: "snapshotting",
       eventCursor: 0,
     }).status).toBe("snapshotting");
+    expect(StartInvestigationResponseSchema.parse({
+      investigationId: id,
+      status: "planning",
+      eventCursor: 12,
+    }).status).toBe("planning");
   });
 
   it("rejects whitespace-only, over-limit, and excessive qualifier inputs", () => {
@@ -57,6 +65,34 @@ describe("investigation API contracts", () => {
       preservedQualifiers: Array.from({ length: 21 }, (_, index) => `q${index}`),
       approved: true,
     }).success).toBe(false);
+  });
+
+  it("accepts investigation response, list, and event envelopes", () => {
+    const now = new Date().toISOString();
+    expect(InvestigationResponseSchema.parse({
+      id,
+      status: "awaiting_claim_review",
+      repository: {
+        owner: "Acme",
+        name: "Widget",
+        canonicalUrl: "https://github.com/Acme/Widget",
+        requestedRef: "main",
+      },
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+      startedAt: null,
+      completedAt: null,
+      failureCode: null,
+      claim: {
+        id: "33333333-3333-4333-8333-333333333333",
+        statement: "README exists.",
+        preservedQualifiers: [],
+        approvedAt: null,
+      },
+    }).status).toBe("awaiting_claim_review");
+    expect(InvestigationListResponseSchema.parse({ investigations: [] }).investigations).toEqual([]);
+    expect(InvestigationEventsResponseSchema.parse({ events: [], nextCursor: 0 }).nextCursor).toBe(0);
   });
 
   it("rejects unknown request keys", () => {
