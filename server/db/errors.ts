@@ -1,7 +1,7 @@
 import { ApplicationError } from "@/server/errors";
 
 const CONNECTION_CODES = new Set([
-  "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT",
+  "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND", "ETIMEDOUT",
 ]);
 const SHUTDOWN_SQLSTATES = new Set(["57P01", "57P02", "57P03"]);
 

@@ -42,7 +42,7 @@ export interface IdempotencyRecordsTable {
   scope: string;
   idempotency_key: string;
   request_hash_sha256: string;
-  investigation_id: string | null;
+  investigation_id: string;
   result_kind: string;
   created_at: Timestamp;
 }

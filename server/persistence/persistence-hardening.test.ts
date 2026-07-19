@@ -1,20 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { ApplicationError } from "@/server/errors";
+import type { Kysely } from "kysely";
+import { ApplicationError, toPublicSafeError } from "@/server/errors";
+import type { Database } from "@/server/db/types";
 import { classifyDatabaseError } from "@/server/db/errors";
 import { PublicInvestigationEventSchema } from "./events";
+import { InvestigationRepository } from "./investigation-repository";
 
 describe("database error classification", () => {
-  it.each(["ECONNREFUSED", "08006", "57P01"])("classifies %s as unavailable", (code) => {
-    const cause = Object.assign(new Error("private"), { code });
+  it.each(["ENOTFOUND", "ECONNREFUSED", "ETIMEDOUT", "08006", "57P01"])(
+    "classifies runtime-shaped %s errors as unavailable", (code) => {
+    const cause = Object.assign(new Error("private host and SQL"), {
+      code, constraint: "private_constraint", detail: "password=secret", query: "select private",
+    });
     const error = classifyDatabaseError(cause);
     expect(error.code).toBe("dependency_unavailable");
     expect(error.causeForLogging).toBe(cause);
+    expect(JSON.stringify(toPublicSafeError(error))).not.toMatch(/private|secret|constraint|select/i);
   });
 
-  it("preserves application errors and treats non-connectivity SQL errors as internal", () => {
+  it("preserves known domain errors unchanged", () => {
     const application = new ApplicationError("conflict", {});
     expect(classifyDatabaseError(application)).toBe(application);
-    expect(classifyDatabaseError({ code: "23505" }).code).toBe("internal_error");
+  });
+
+  it.each([
+    Object.assign(new Error("unexpected unique constraint"), { code: "23505", constraint: "unknown_unique" }),
+    Object.assign(new Error("unknown SQLSTATE"), { code: "XX999" }),
+    new TypeError("row mapping defect"),
+    new Error("plain programming failure"),
+  ])("maps unknown and programming failures to internal_error", (cause) => {
+    const error = classifyDatabaseError(cause);
+    expect(error.code).toBe("internal_error");
+    expect(error.causeForLogging).toBe(cause);
+    expect(JSON.stringify(toPublicSafeError(error))).not.toMatch(/unique|SQLSTATE|mapping|programming|constraint/i);
+  });
+
+  it("rejects an invalid cursor before attempting any database query", async () => {
+    const inaccessibleDatabase = {} as Kysely<Database>;
+    const repository = new InvestigationRepository(inaccessibleDatabase);
+    await expect(repository.getEvents("8c8bc9ee-7c3e-4e2d-8f3e-a2ed0b7e1157", "01"))
+      .rejects.toMatchObject({ code: "malformed_input" });
   });
 });
 

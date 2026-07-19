@@ -11,12 +11,25 @@ describe("persistence helpers", () => {
     expect(hashStartInput("8c8bc9ee-7c3e-4e2d-8f3e-a2ed0b7e1157")).toHaveLength(64);
   });
   it("parses precision-safe cursors and bounded limits", () => {
-    expect(parseEventCursor("9007199254740993")).toBe("9007199254740993");
+    expect(parseEventCursor("0")).toBe("0");
     expect(parseEventCursor("9223372036854775807")).toBe("9223372036854775807");
     expect(boundEventLimit(1)).toBe(1);
     expect(boundEventLimit(100)).toBe(100);
-    expect(() => parseEventCursor("-1")).toThrow(ApplicationError);
-    expect(() => parseEventCursor("9223372036854775808")).toThrow(ApplicationError);
+    for (const invalid of [
+      "9223372036854775808",
+      "9999999999999999999",
+      "10000000000000000000",
+      "+1",
+      "-1",
+      " 1",
+      "1 ",
+      "1.0",
+      "1e3",
+      "",
+      "01",
+    ]) {
+      expect(() => parseEventCursor(invalid), invalid).toThrow(ApplicationError);
+    }
     expect(() => boundEventLimit(101)).toThrow(ApplicationError);
   });
   it("accepts only safe failure classifications", () => {
