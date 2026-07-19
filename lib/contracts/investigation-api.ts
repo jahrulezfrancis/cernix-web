@@ -206,7 +206,11 @@ export const InvestigationReportResponseSchema = z
     investigationId: InvestigationIdSchema,
     completionDisposition: z.enum(["completed", "completed_with_limitations"]),
     artifactHashSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    snapshotManifestHash: z.string().regex(/^[0-9a-f]{64}$/),
     artifact: z.unknown(),
+    evidenceBundle: z.unknown().optional(),
+    skepticAnalysis: z.unknown().nullable().optional(),
+    investigationPlan: z.unknown().nullable().optional(),
   })
   .strict();
 export type InvestigationReportResponse = z.infer<typeof InvestigationReportResponseSchema>;

@@ -11,7 +11,6 @@ import {
   isBackendInvestigationId,
 } from "@/lib/api/investigation-client";
 import { investigationResponseToUi, judgeArtifactToReport } from "@/lib/api/backend-investigation-adapter";
-import { validateJudgeArtifact } from "@/lib/contracts/judgment-report";
 import { getInvestigation as getLegacyInvestigation, getStorageHealth } from "@/lib/investigation-repository";
 import type { Investigation, Report } from "@/lib/types";
 import { AlertTriangle, FileText, Loader2 } from "lucide-react";
@@ -33,10 +32,9 @@ export function ReportPageClient({ id }: { id: string }) {
             getInvestigationReport(id),
           ]);
           if (cancelled) return;
-          const artifact = validateJudgeArtifact(persisted.artifact);
           const ui = investigationResponseToUi(loaded, { hasReport: true });
           setInvestigation(ui);
-          setReport(judgeArtifactToReport(loaded, artifact, persisted.artifactHashSha256));
+          setReport(judgeArtifactToReport(loaded, persisted));
         } catch (cause) {
           if (!cancelled) {
             setError(cause instanceof ApiRequestError ? cause.message : "Unable to load report.");
