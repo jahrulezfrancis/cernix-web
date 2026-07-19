@@ -58,10 +58,32 @@ export interface InvestigationJobsTable {
   created_at: Timestamp;
   updated_at: Timestamp;
 }
+export interface RepositorySnapshotsTable {
+  id: string; investigation_id: string; github_repository_id: string;
+  canonical_owner: string; canonical_repository: string; canonical_url: string;
+  default_branch: string; requested_ref: string | null; resolved_ref: string;
+  commit_sha: string; root_tree_sha: string; manifest_schema_version: number;
+  admission_policy_version: number; manifest_hash_sha256: string;
+  inspected_entry_count: number; admitted_file_count: number; excluded_entry_count: number;
+  total_admitted_bytes: string; created_at: Timestamp;
+}
+export interface RepositorySnapshotEntriesTable {
+  id: string; snapshot_id: string; path: string; mode: string; object_type: string;
+  object_sha: string; reported_size: string | null; decision: "admitted" | "excluded";
+  exclusion_reason: string | null; manifest_order: number;
+}
+export interface RepositorySnapshotFilesTable {
+  id: string; snapshot_id: string; entry_id: string; raw_content: Uint8Array;
+  normalized_text: string; raw_sha256: string; normalized_sha256: string;
+  byte_count: number; line_count: number; detected_language: string | null; created_at: Timestamp;
+}
 export interface Database {
   investigations: InvestigationsTable;
   manual_claims: ManualClaimsTable;
   investigation_events: InvestigationEventsTable;
   idempotency_records: IdempotencyRecordsTable;
   investigation_jobs: InvestigationJobsTable;
+  repository_snapshots: RepositorySnapshotsTable;
+  repository_snapshot_entries: RepositorySnapshotEntriesTable;
+  repository_snapshot_files: RepositorySnapshotFilesTable;
 }

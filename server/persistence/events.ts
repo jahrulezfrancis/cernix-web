@@ -16,6 +16,17 @@ const StartedEventSchema = z.strictObject({
   type: z.literal("investigation_started"), stage: z.literal("snapshotting"),
   payload: z.strictObject({ jobKind: z.literal("repository_snapshot") }),
 });
+const SnapshotPersistedEventSchema = z.strictObject({
+  type: z.literal("repository_snapshot_persisted"), stage: z.literal("snapshotting"),
+  payload: z.strictObject({
+    commitSha: z.string().regex(/^[0-9a-f]{40}$/),
+    manifestHash: z.string().regex(/^[0-9a-f]{64}$/),
+    inspectedEntryCount: z.number().int().min(0).max(50_000),
+    admittedFileCount: z.number().int().min(0).max(5_000),
+    excludedEntryCount: z.number().int().min(0).max(50_000),
+    totalAdmittedBytes: z.string().regex(/^(?:0|[1-9]\d{0,8})$/),
+  }),
+});
 const LifecycleEventSchema = z.strictObject({
   type: z.literal("lifecycle_transitioned"), stage: BackendLifecycleStatusSchema,
   payload: z.strictObject({ from: BackendLifecycleStatusSchema, to: BackendLifecycleStatusSchema }),
@@ -27,6 +38,6 @@ const LifecycleEventSchema = z.strictObject({
 });
 
 export const PublicInvestigationEventSchema = z.union([
-  CreatedEventSchema, ClaimEventSchema, StartedEventSchema, LifecycleEventSchema,
+  CreatedEventSchema, ClaimEventSchema, StartedEventSchema, SnapshotPersistedEventSchema, LifecycleEventSchema,
 ]);
 export type PublicInvestigationEvent = z.infer<typeof PublicInvestigationEventSchema>;
