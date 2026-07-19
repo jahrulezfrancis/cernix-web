@@ -50,13 +50,34 @@ export interface InvestigationJobsTable {
   id: string;
   investigation_id: string;
   kind: "repository_snapshot";
-  status: "queued";
-  attempt: Generated<number>;
+  status: "queued" | "leased" | "retry_wait" | "succeeded" | "failed" | "cancelled";
+  attempt_count: Generated<number>;
+  max_attempts: Generated<number>;
   available_at: Timestamp;
   lease_owner: string | null;
+  lease_token: string | null;
   lease_expires_at: Timestamp | null;
+  last_heartbeat_at: Timestamp | null;
+  started_at: Timestamp | null;
+  completed_at: Timestamp | null;
+  failed_at: Timestamp | null;
+  failure_code: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
+}
+export interface SnapshotJobAttemptsTable {
+  id: Generated<string>;
+  job_id: string;
+  investigation_id: string;
+  attempt_number: number;
+  lease_token: string;
+  worker_owner: string;
+  status: "leased" | "succeeded" | "retry_scheduled" | "failed" | "lease_expired" | "cancelled";
+  started_at: Timestamp;
+  last_heartbeat_at: Timestamp;
+  finished_at: Timestamp | null;
+  failure_code: string | null;
+  next_available_at: Timestamp | null;
 }
 export interface RepositorySnapshotsTable {
   id: string; investigation_id: string; github_repository_id: string;
@@ -83,6 +104,7 @@ export interface Database {
   investigation_events: InvestigationEventsTable;
   idempotency_records: IdempotencyRecordsTable;
   investigation_jobs: InvestigationJobsTable;
+  snapshot_job_attempts: SnapshotJobAttemptsTable;
   repository_snapshots: RepositorySnapshotsTable;
   repository_snapshot_entries: RepositorySnapshotEntriesTable;
   repository_snapshot_files: RepositorySnapshotFilesTable;

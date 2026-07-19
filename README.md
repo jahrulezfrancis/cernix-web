@@ -26,7 +26,63 @@ the validated client endpoint is numeric loopback; `current_database()` must als
 match the guarded base before child creation.
 Each run creates a randomized child database, migrates it from empty, and drops only
 that exact child database during cleanup.
-Job execution, retry scheduling, and production deployment are intentionally deferred.
+Production deployment and supervision remain intentionally deferred.
+
+## Durable repository snapshot worker
+
+Snapshot jobs use PostgreSQL for at-least-once execution. A worker claims one eligible
+`queued`, `retry_wait`, or expired `leased` job with `FOR UPDATE SKIP LOCKED`, records a
+new durable attempt and an independent lease token, and performs GitHub work outside
+the claim transaction. Heartbeats extend a live lease from database time. Every
+heartbeat, retry, success, failure, and cancellation is fenced by job ID, current
+`leased` state, the exact lease token, and an unexpired database-time lease.
+
+An expired lease can be reclaimed by another process. The old attempt becomes
+`lease_expired`, its token loses all mutation authority, and the replacement gets the
+next persisted attempt number. Execution is not exactly once: durable snapshot,
+lifecycle, attempt, job, and event effects are instead transactional, idempotent, and
+lease-fenced. If a crashed worker already persisted the immutable snapshot, its
+replacement replays that snapshot and completes without another GitHub build.
+
+Successful work atomically changes `snapshotting` to `planning`, marks the attempt and
+job `succeeded`, and emits one existing `lifecycle_transitioned` event. Retryable
+provider availability, rate-limit, deadline, approved internal, and shutdown failures
+move the same job to `retry_wait` while the investigation remains `snapshotting`.
+Backoff is deterministic and persisted as `min(retry base × 2^(attempt - 1), retry
+maximum)`. Deterministic failures or exhausted attempts atomically mark the job and
+attempt `failed`, move `snapshotting` to `failed`, and emit one lifecycle event.
+Obsolete active work is `cancelled` without regressing authoritative lifecycle state.
+
+Run the worker separately from the Next.js process:
+
+```bash
+npm run worker:snapshot
+npm run worker:snapshot:once
+```
+
+Loop mode polls only while idle. `SIGINT` and `SIGTERM` stop new claims, abort active
+snapshot work, and schedule an owned interrupted attempt for bounded retry when its
+lease is still valid. Timers, signal listeners, and the database pool are closed on
+exit. Operational logs contain only job/investigation identifiers, attempt numbers,
+safe statuses, and allowlisted failure codes—never lease tokens, repository data,
+credentials, provider bodies, SQL, or stacks.
+
+Worker configuration is parsed lazily. Defaults and accepted ranges are:
+
+| Setting | Default | Range |
+|---|---:|---:|
+| `CERNIX_SNAPSHOT_LEASE_SECONDS` | 120 | 30–900 |
+| `CERNIX_SNAPSHOT_HEARTBEAT_SECONDS` | 30 | 1–449 and less than half the lease |
+| `CERNIX_SNAPSHOT_POLL_MS` | 1,000 | 250–30,000 |
+| `CERNIX_SNAPSHOT_MAX_ATTEMPTS` | 4 | 1–10 |
+| `CERNIX_SNAPSHOT_RETRY_BASE_SECONDS` | 5 | 1–300 |
+| `CERNIX_SNAPSHOT_RETRY_MAX_SECONDS` | 300 | 1–3,600 and at least the base |
+
+`CERNIX_SNAPSHOT_WORKER_OWNER` may be a bounded machine-safe opaque value; when absent,
+the process generates `worker-<UUID>` rather than exposing a hostname, user, container,
+or command line. The maximum attempt count is copied into each new job so later
+configuration changes do not alter existing budgets. Deployment supervision,
+distributed metrics, alerts, and hosted worker configuration remain deferred.
 
 ## Immutable public GitHub snapshots
 
@@ -151,8 +207,7 @@ npm run test:github-live
   per-element constraints and maximum count.
 - Production Alibaba RDS TLS and CA verification must be configured before deployment.
   Never use `rejectUnauthorized: false`.
-- Job retry states and status expansion require a later migration.
 - Private repositories, GitHub App authentication, object-storage offload, retention,
-  dependency-claim policy modes, worker execution, and database-role-level snapshot
+  dependency-claim policy modes, deployment supervision/metrics, and database-role-level snapshot
   immutability are deferred. Investigation cascade deletion remains supported, so the
   database role does not yet make snapshot rows absolutely undeletable.
