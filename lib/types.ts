@@ -216,6 +216,7 @@ export interface Judgment {
   reasoning: string;
   unprovenAspects: string[];
   whatCouldChangeVerdict: string[];
+  confidenceFactors?: string[];
   issuedAt: string;
 }
 
@@ -294,6 +295,9 @@ export interface Report {
   challenges: Record<string, Challenge[]>;
   evidenceGaps: Record<string, EvidenceGap[]>;
   maintainerActions: Record<string, string[]>;
+  completionDisposition?: "completed" | "completed_with_limitations";
+  artifactHashSha256?: string;
+  snapshotManifestHash?: string;
 }
 
 export interface Investigation {

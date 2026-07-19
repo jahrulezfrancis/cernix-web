@@ -45,9 +45,10 @@ interface AppShellProps {
   children: React.ReactNode;
   investigation?: Investigation | null;
   title?: string;
+  lockScroll?: boolean;
 }
 
-export function AppShell({ children, investigation, title }: AppShellProps) {
+export function AppShell({ children, investigation, title, lockScroll = false }: AppShellProps) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -242,7 +243,7 @@ export function AppShell({ children, investigation, title }: AppShellProps) {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto">
+        <main className={cn("flex-1", lockScroll ? "overflow-hidden" : "overflow-y-auto")}>
           {children}
         </main>
       </div>

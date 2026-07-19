@@ -42,7 +42,7 @@ function isValidGitHubRepoUrl(url: string): boolean {
 export default function NewInvestigationPage() {
   const router = useRouter();
 
-  const [repoUrl, setRepoUrl] = useState("https://github.com/acme/stellar-service");
+  const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("");
   const [submissionType, setSubmissionType] = useState<SubmissionType>("hackathon_submission");
   const [description, setDescription] = useState(EXAMPLE_DESCRIPTION);

@@ -1,9 +1,20 @@
 import type {
   BackendLifecycleStatus,
+  InvestigationReportResponse,
   InvestigationResponse,
   InvestigationSummary,
 } from "@/lib/contracts/investigation-api";
 import type { JudgeArtifact } from "@/lib/contracts/judgment-report";
+import { InvestigationPlanArtifactSchema } from "@/lib/contracts/investigation-plan";
+import { SkepticArtifactSchema } from "@/lib/contracts/skeptic-challenge";
+import { InvestigationEvidenceBundleSchema } from "@/lib/contracts/report-enrichment";
+import {
+  mapArtifactLimitationsToGaps,
+  mapEvidenceBundleToReport,
+  mapPlanArtifactToObligations,
+  mapSkepticArtifactToChallenges,
+  mergeEvidenceGaps,
+} from "@/lib/api/report-enrichment-adapter";
 import { continuationRoute } from "@/lib/investigation-lifecycle";
 import type {
   Claim,
@@ -191,8 +202,24 @@ export function dashboardRouteForSummary(summary: InvestigationSummary): string 
 
 export function judgeArtifactToReport(
   investigation: InvestigationResponse,
+  persisted: InvestigationReportResponse,
+): Report {
+  const artifact = persisted.artifact as JudgeArtifact;
+  return buildReportFromArtifact(investigation, artifact, persisted);
+}
+
+export function buildReportFromArtifact(
+  investigation: InvestigationResponse,
   artifact: JudgeArtifact,
-  reportId: string,
+  persisted: Pick<
+    InvestigationReportResponse,
+    | "artifactHashSha256"
+    | "completionDisposition"
+    | "snapshotManifestHash"
+    | "evidenceBundle"
+    | "skepticAnalysis"
+    | "investigationPlan"
+  > & { artifactHashSha256: string },
 ): Report {
   const verdictCounts = {
     verified: 0,
@@ -210,7 +237,7 @@ export function judgeArtifactToReport(
       id: judgment.claimId,
       investigationId: investigation.id,
       originalStatement: investigation.claim.statement,
-      normalizedInterpretation: judgment.summary,
+      normalizedInterpretation: investigation.claim.statement,
       category: "implementation" as const,
       criticality: "medium" as const,
       verifiability: "verifiable" as const,
@@ -233,14 +260,36 @@ export function judgeArtifactToReport(
     reasoning: judgment.reasoning,
     unprovenAspects: judgment.unprovenAspects,
     whatCouldChangeVerdict: judgment.whatCouldChangeVerdict,
+    confidenceFactors: judgment.confidenceFactors,
     issuedAt: investigation.completedAt ?? investigation.updatedAt,
   }]));
   const maintainerActions = Object.fromEntries(artifact.claimJudgments.map((judgment) => [
     judgment.claimId,
     artifact.maintainerActions.filter((action) => action.claimId === judgment.claimId).map((action) => action.action),
   ]));
+
+  const evidenceBundle = persisted.evidenceBundle
+    ? InvestigationEvidenceBundleSchema.parse(persisted.evidenceBundle)
+    : undefined;
+  const skepticArtifact = persisted.skepticAnalysis
+    ? SkepticArtifactSchema.parse(persisted.skepticAnalysis)
+    : null;
+  const planArtifact = persisted.investigationPlan
+    ? InvestigationPlanArtifactSchema.parse(persisted.investigationPlan)
+    : null;
+
+  const mappedEvidence = mapEvidenceBundleToReport(evidenceBundle, investigation.id);
+  const mappedGaps = mergeEvidenceGaps(
+    mappedEvidence.evidenceGaps,
+    mapArtifactLimitationsToGaps(artifact.limitations),
+  );
+
+  const verifiedRate = claims.length
+    ? Math.round((verdictCounts.verified / claims.length) * 100)
+    : 0;
+
   return {
-    id: reportId,
+    id: persisted.artifactHashSha256,
     investigationId: investigation.id,
     projectName: `${investigation.repository.owner}/${investigation.repository.name}`,
     repositorySnapshot: {
@@ -267,12 +316,12 @@ export function judgeArtifactToReport(
     unverified: verdictCounts.unverified,
     contradicted: verdictCounts.contradicted,
     inconclusive: verdictCounts.inconclusive,
-    overallCoverage: claims.length ? Math.round((verdictCounts.verified / claims.length) * 100) : 0,
+    overallCoverage: verifiedRate,
     summarySentence: artifact.reportSummary,
     criticalFindings: artifact.limitations.map((item) => item.description),
     coverage: {
-      sourceCode: "partial",
-      documentation: "partial",
+      sourceCode: evidenceBundle?.tasks.some((task) => task.candidates.length > 0) ? "partial" : "unavailable",
+      documentation: "unavailable",
       tests: "unavailable",
       ciWorkflows: "unavailable",
       pullRequests: "unavailable",
@@ -282,11 +331,14 @@ export function judgeArtifactToReport(
     },
     claims,
     judgments,
-    evidence: {},
-    proofObligations: {},
-    challenges: {},
-    evidenceGaps: {},
+    evidence: mappedEvidence.evidence,
+    proofObligations: mapPlanArtifactToObligations(planArtifact),
+    challenges: mapSkepticArtifactToChallenges(skepticArtifact),
+    evidenceGaps: mappedGaps,
     maintainerActions,
+    completionDisposition: persisted.completionDisposition,
+    artifactHashSha256: persisted.artifactHashSha256,
+    snapshotManifestHash: persisted.snapshotManifestHash,
   };
 }
 

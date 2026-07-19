@@ -10,6 +10,7 @@ import {
 import { JudgeArtifactSchema } from "@/lib/contracts/judgment-report";
 import type { InvestigationReadModel } from "@/server/persistence/investigation-repository";
 import type { PersistedInvestigationReport } from "@/server/persistence/judgment-repository";
+import type { ReportEnrichment } from "@/server/report/load-report-enrichment";
 
 function toIso(value: Date): string {
   return value.toISOString();
@@ -97,11 +98,18 @@ export function serializeInvestigationEvents(events: ReadonlyArray<{
   });
 }
 
-export function serializeInvestigationReport(report: PersistedInvestigationReport) {
+export function serializeInvestigationReport(
+  report: PersistedInvestigationReport,
+  enrichment?: ReportEnrichment,
+) {
   return InvestigationReportResponseSchema.parse({
     investigationId: report.investigationId,
     completionDisposition: report.completionDisposition,
     artifactHashSha256: report.artifactHashSha256,
+    snapshotManifestHash: report.artifact.snapshotManifestHash,
     artifact: JudgeArtifactSchema.parse(report.artifact),
+    evidenceBundle: enrichment?.evidenceBundle,
+    skepticAnalysis: enrichment?.skepticAnalysis?.artifact ?? null,
+    investigationPlan: enrichment?.investigationPlan?.artifact ?? null,
   });
 }
