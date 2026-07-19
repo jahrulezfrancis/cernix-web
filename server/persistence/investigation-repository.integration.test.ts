@@ -5,6 +5,7 @@ import type { Database } from "@/server/db/types";
 import { createDisposableTestDatabase } from "@/server/db/test-database";
 import { migrateToLatest, rollbackOne } from "@/server/db/migrate";
 import { ApplicationError } from "@/server/errors";
+import { TEST_OWNER_USER_ID, seedTestOwner } from "@/server/auth/test-fixtures";
 import { InvestigationRepository } from "./investigation-repository";
 import { BACKEND_LIFECYCLE_TRANSITIONS, type BackendLifecycleStatus } from "@/lib/contracts/investigation-api";
 
@@ -19,11 +20,11 @@ const createInput = {
 const approval = { statement: "The project verifies every pull request.", preservedQualifiers: ["every"], approved: true as const };
 
 async function truncate() {
-  await sql`truncate investigation_jobs, idempotency_records, investigation_events, manual_claims, investigations restart identity cascade`.execute(db);
+  await sql`truncate investigation_jobs, idempotency_records, investigation_events, manual_claims, investigations, sessions, security_events, users restart identity cascade`.execute(db);
 }
 async function createApproved() {
-  const created = await repository.createInvestigation(createInput, randomUUID());
-  return repository.approveClaim(created.id, approval);
+  const created = await repository.createInvestigation(createInput, randomUUID(), TEST_OWNER_USER_ID);
+  return repository.approveClaim(created.id, approval, TEST_OWNER_USER_ID);
 }
 async function counts() {
   const result: Record<string, number> = {};
@@ -46,7 +47,10 @@ beforeAll(async () => {
   const results = await migrateToLatest(db);
   expect(results.some((result) => result.status === "Success")).toBe(true);
 });
-beforeEach(truncate);
+beforeEach(async () => {
+  await truncate();
+  await seedTestOwner(db);
+});
 afterAll(async () => { await harness?.cleanup(); });
 
 describe.sequential("PostgreSQL investigation persistence", () => {
@@ -64,7 +68,7 @@ describe.sequential("PostgreSQL investigation persistence", () => {
     expect(new Set(indexes.rows.map((row) => row.indexname))).toEqual(new Set([
       "investigation_events_cursor_idx", "investigation_jobs_active_snapshot_idx", "investigation_jobs_claim_idx",
     ]));
-    const created = await repository.createInvestigation(createInput, randomUUID());
+    const created = await repository.createInvestigation(createInput, randomUUID(), TEST_OWNER_USER_ID);
     await expect(sql`update investigations set status = 'submitted' where id = ${created.id}`.execute(db)).rejects.toBeTruthy();
     await expect(db.insertInto("manual_claims").values({
       id: randomUUID(), investigation_id: created.id, statement: "second", preserved_qualifiers: "[]",
@@ -77,42 +81,42 @@ describe.sequential("PostgreSQL investigation persistence", () => {
   it("creates canonical state once and replays identical idempotent requests", async () => {
     const key = randomUUID();
     const [first, replay] = await Promise.all([
-      repository.createInvestigation(createInput, key),
-      repository.createInvestigation(createInput, key),
+      repository.createInvestigation(createInput, key, TEST_OWNER_USER_ID),
+      repository.createInvestigation(createInput, key, TEST_OWNER_USER_ID),
     ]);
     expect(replay.id).toBe(first.id);
     expect(first).toMatchObject({ status: "awaiting_claim_review", repositoryOwner: "Acme",
       repositoryName: "Widget", repositoryCanonicalUrl: "https://github.com/Acme/Widget",
       requestedRef: "main", version: 1 });
     expect(await counts()).toMatchObject({ investigations: 1, manual_claims: 1, investigation_events: 1, idempotency_records: 1 });
-    await expect(repository.createInvestigation({ ...createInput, claim: { statement: "different" } }, key))
+    await expect(repository.createInvestigation({ ...createInput, claim: { statement: "different" } }, key, TEST_OWNER_USER_ID))
       .rejects.toMatchObject({ code: "conflict" });
   });
 
   it("rejects invalid create input before persistence", async () => {
-    await expect(repository.createInvestigation({ ...createInput, repositoryUrl: "https://evil.test/x/y" }, randomUUID())).rejects.toBeTruthy();
+    await expect(repository.createInvestigation({ ...createInput, repositoryUrl: "https://evil.test/x/y" }, randomUUID(), TEST_OWNER_USER_ID)).rejects.toBeTruthy();
     expect(await counts()).toMatchObject({ investigations: 0, manual_claims: 0 });
   });
 
   it("approves, idempotently replays, edits once, and rejects post-start edits", async () => {
-    const created = await repository.createInvestigation(createInput, randomUUID());
-    const approved = await repository.approveClaim(created.id, approval);
-    const replay = await repository.approveClaim(created.id, approval);
+    const created = await repository.createInvestigation(createInput, randomUUID(), TEST_OWNER_USER_ID);
+    const approved = await repository.approveClaim(created.id, approval, TEST_OWNER_USER_ID);
+    const replay = await repository.approveClaim(created.id, approval, TEST_OWNER_USER_ID);
     expect(replay.version).toBe(approved.version);
     expect(replay.claim.approvedAt?.getTime()).toBe(approved.claim.approvedAt?.getTime());
-    const edited = await repository.approveClaim(created.id, { ...approval, statement: "An edited claim." });
+    const edited = await repository.approveClaim(created.id, { ...approval, statement: "An edited claim." }, TEST_OWNER_USER_ID);
     expect(edited.version).toBe(approved.version + 1);
-    await repository.startInvestigation(created.id, randomUUID());
-    await expect(repository.approveClaim(created.id, approval)).rejects.toMatchObject({ code: "invalid_lifecycle_transition" });
-    await expect(repository.approveClaim(randomUUID(), approval)).rejects.toMatchObject({ code: "not_found" });
+    await repository.startInvestigation(created.id, randomUUID(), TEST_OWNER_USER_ID);
+    await expect(repository.approveClaim(created.id, approval, TEST_OWNER_USER_ID)).rejects.toMatchObject({ code: "invalid_lifecycle_transition" });
+    await expect(repository.approveClaim(randomUUID(), approval, TEST_OWNER_USER_ID)).rejects.toMatchObject({ code: "not_found" });
   });
 
   it("requires approval and starts exactly once under concurrency", async () => {
-    const unapproved = await repository.createInvestigation(createInput, randomUUID());
-    await expect(repository.startInvestigation(unapproved.id, randomUUID())).rejects.toMatchObject({ code: "conflict" });
-    const approved = await repository.approveClaim(unapproved.id, approval);
+    const unapproved = await repository.createInvestigation(createInput, randomUUID(), TEST_OWNER_USER_ID);
+    await expect(repository.startInvestigation(unapproved.id, randomUUID(), TEST_OWNER_USER_ID)).rejects.toMatchObject({ code: "conflict" });
+    const approved = await repository.approveClaim(unapproved.id, approval, TEST_OWNER_USER_ID);
     const keys = Array.from({ length: 8 }, () => randomUUID());
-    const results = await Promise.all(keys.map((key) => repository.startInvestigation(approved.id, key)));
+    const results = await Promise.all(keys.map((key) => repository.startInvestigation(approved.id, key, TEST_OWNER_USER_ID)));
     expect(new Set(results.map((value) => value.startedAt?.getTime())).size).toBe(1);
     expect(results[0]).toMatchObject({ status: "snapshotting", version: approved.version + 1 });
     expect(await counts()).toMatchObject({ investigation_jobs: 1, investigation_events: 3, idempotency_records: 2 });
@@ -120,19 +124,20 @@ describe.sequential("PostgreSQL investigation persistence", () => {
 
   it("treats later starts as success but never restarts failed investigations", async () => {
     const approved = await createApproved();
-    const started = await repository.startInvestigation(approved.id, randomUUID());
-    const later = await repository.startInvestigation(started.id, randomUUID());
+    const started = await repository.startInvestigation(approved.id, randomUUID(), TEST_OWNER_USER_ID);
+    const later = await repository.startInvestigation(started.id, randomUUID(), TEST_OWNER_USER_ID);
     expect(later.startedAt?.getTime()).toBe(started.startedAt?.getTime());
     expect(later.version).toBe(started.version);
     const failed = await repository.transitionInvestigation(started.id, "failed", { failureCode: "snapshot_timeout" });
     expect(failed.failureCode).toBe("snapshot_timeout");
-    await expect(repository.startInvestigation(failed.id, randomUUID())).rejects.toMatchObject({ code: "invalid_lifecycle_transition" });
+    await expect(repository.startInvestigation(failed.id, randomUUID(), TEST_OWNER_USER_ID)).rejects.toMatchObject({ code: "invalid_lifecycle_transition" });
   });
 
   it("persists every authoritative forward edge and rejects stale expectations", async () => {
     for (const [from, targets] of Object.entries(BACKEND_LIFECYCLE_TRANSITIONS) as [BackendLifecycleStatus, readonly BackendLifecycleStatus[]][]) {
       for (const to of targets) {
         await truncate();
+        await seedTestOwner(db);
         const approved = await createApproved();
         await db.updateTable("investigations").set({
           status: from,
@@ -145,6 +150,7 @@ describe.sequential("PostgreSQL investigation persistence", () => {
       }
     }
     await truncate();
+    await seedTestOwner(db);
     const approved = await createApproved();
     await expect(repository.transitionInvestigation(approved.id, "snapshotting", { expectedStatus: "planning" }))
       .rejects.toMatchObject({ code: "conflict" });
@@ -152,7 +158,7 @@ describe.sequential("PostgreSQL investigation persistence", () => {
 
   it("keeps same-state and completion timestamps immutable and rejects terminal regressions", async () => {
     const approved = await createApproved();
-    let value = await repository.startInvestigation(approved.id, randomUUID());
+    let value = await repository.startInvestigation(approved.id, randomUUID(), TEST_OWNER_USER_ID);
     const same = await repository.transitionInvestigation(value.id, "snapshotting");
     expect(same.version).toBe(value.version);
     for (const status of ["planning", "investigating", "challenging", "judging", "completed"] as const) {
@@ -167,21 +173,21 @@ describe.sequential("PostgreSQL investigation persistence", () => {
 
   it("paginates events strictly after precision-safe string cursors", async () => {
     const approved = await createApproved();
-    await repository.startInvestigation(approved.id, randomUUID());
+    await repository.startInvestigation(approved.id, randomUUID(), TEST_OWNER_USER_ID);
     await sql`select setval(pg_get_serial_sequence('investigation_events','sequence'), 9007199254740992, true)`.execute(db);
     await repository.transitionInvestigation(approved.id, "planning");
-    const page = await repository.getEvents(approved.id, "0", 2);
-    const next = await repository.getEvents(approved.id, page.nextCursor, 100);
+    const page = await repository.getEvents(approved.id, TEST_OWNER_USER_ID, "0", 2);
+    const next = await repository.getEvents(approved.id, TEST_OWNER_USER_ID, page.nextCursor, 100);
     expect(page.events).toHaveLength(2);
     expect(next.events.every((event) => BigInt(event.sequence) > BigInt(page.nextCursor))).toBe(true);
     expect(next.nextCursor).toBe("9007199254740993");
-    await expect(repository.getEvents(approved.id, "0", 101)).rejects.toMatchObject({ code: "malformed_input" });
+    await expect(repository.getEvents(approved.id, TEST_OWNER_USER_ID, "0", 101)).rejects.toMatchObject({ code: "malformed_input" });
   });
 
   it("rolls transactions back without partial state", async () => {
     const key = randomUUID();
     await db.schema.alterTable("manual_claims").addCheckConstraint("force_failure", sql`false`).execute();
-    await expect(repository.createInvestigation(createInput, key)).rejects.toMatchObject({ code: "internal_error" });
+    await expect(repository.createInvestigation(createInput, key, TEST_OWNER_USER_ID)).rejects.toMatchObject({ code: "internal_error" });
     await db.schema.alterTable("manual_claims").dropConstraint("force_failure").execute();
     expect(await counts()).toMatchObject({ investigations: 0, manual_claims: 0, investigation_events: 0, idempotency_records: 0 });
   });
@@ -202,6 +208,7 @@ describe.sequential("PostgreSQL investigation persistence", () => {
     expect(actual).toEqual({
       "idempotency_records.scope": "text|NO||NO",
       "idempotency_records.idempotency_key": "uuid|NO||NO",
+      "idempotency_records.owner_user_id": "uuid|NO||NO",
       "idempotency_records.request_hash_sha256": "text|NO||NO",
       "idempotency_records.investigation_id": "uuid|NO||NO",
       "idempotency_records.result_kind": "text|NO||NO",
@@ -230,6 +237,7 @@ describe.sequential("PostgreSQL investigation persistence", () => {
       "investigation_jobs.created_at": "timestamp with time zone|NO||NO",
       "investigation_jobs.updated_at": "timestamp with time zone|NO||NO",
       "investigations.id": "uuid|NO||NO",
+      "investigations.owner_user_id": "uuid|NO||NO",
       "investigations.status": "text|NO||NO",
       "investigations.repository_owner": "text|NO||NO",
       "investigations.repository_name": "text|NO||NO",
@@ -275,8 +283,12 @@ describe.sequential("PostgreSQL investigation persistence", () => {
       "manual_claims_preserved_qualifiers_check", "manual_claims_statement_check",
     ].sort());
     expect(constraints.rows.filter((row) => row.contype === "f").map((row) => [row.relname, row.delete_action])).toEqual([
-      ["idempotency_records", "CASCADE"], ["investigation_events", "CASCADE"],
-      ["investigation_jobs", "CASCADE"], ["manual_claims", "CASCADE"],
+      ["idempotency_records", "CASCADE"],
+      ["idempotency_records", "NO ACTION"],
+      ["investigation_events", "CASCADE"],
+      ["investigation_jobs", "CASCADE"],
+      ["investigations", "NO ACTION"],
+      ["manual_claims", "CASCADE"],
     ]);
     expect(constraints.rows.filter((row) => row.contype === "p").map((row) => row.relname).sort()).toEqual([
       "idempotency_records", "investigation_events", "investigation_jobs", "investigations", "manual_claims",
@@ -298,7 +310,7 @@ describe.sequential("PostgreSQL investigation persistence", () => {
   });
 
   it("rejects every bounded-field and lifecycle-coherence violation directly", async () => {
-    const created = await repository.createInvestigation(createInput, randomUUID());
+    const created = await repository.createInvestigation(createInput, randomUUID(), TEST_OWNER_USER_ID);
     for (const [column, value] of [
       ["repository_owner", ""], ["repository_owner", "o".repeat(40)],
       ["repository_name", ""], ["repository_name", "r".repeat(101)],
@@ -332,7 +344,7 @@ describe.sequential("PostgreSQL investigation persistence", () => {
       values ('create',${randomUUID()},'short',${approved.id},'investigation_created',${now})`.execute(tx));
     await expectSqlRejection((tx) => sql`insert into investigation_events(investigation_id,type,stage,public_payload,created_at)
       values (${approved.id},'unknown_event','awaiting_claim_review','{}'::jsonb,${now})`.execute(tx));
-    await repository.startInvestigation(approved.id, randomUUID());
+    await repository.startInvestigation(approved.id, randomUUID(), TEST_OWNER_USER_ID);
     await expectSqlRejection((tx) => sql`insert into investigation_jobs(id,investigation_id,kind,status,available_at,lease_owner,lease_expires_at,created_at,updated_at)
       values (${randomUUID()},${approved.id},'repository_snapshot','queued',${now},null,null,${now},${now})`.execute(tx));
   });
@@ -340,13 +352,13 @@ describe.sequential("PostgreSQL investigation persistence", () => {
   it("serializes concurrent claim edits with the last lock winner persisted", async () => {
     const approved = await createApproved();
     const [first, second] = await Promise.all([
-      repository.approveClaim(approved.id, { ...approval, statement: "Concurrent edit A." }),
-      repository.approveClaim(approved.id, { ...approval, statement: "Concurrent edit B." }),
+      repository.approveClaim(approved.id, { ...approval, statement: "Concurrent edit A." }, TEST_OWNER_USER_ID),
+      repository.approveClaim(approved.id, { ...approval, statement: "Concurrent edit B." }, TEST_OWNER_USER_ID),
     ]);
     const versions = [first.version, second.version].sort((a, b) => a - b);
     expect(versions).toEqual([approved.version + 1, approved.version + 2]);
     const lockWinner = first.version > second.version ? first : second;
-    const persisted = await repository.getInvestigation(approved.id);
+    const persisted = await repository.getInvestigation(approved.id, TEST_OWNER_USER_ID);
     expect(persisted.version).toBe(lockWinner.version);
     expect(persisted.claim.statement).toBe(lockWinner.claim.statement);
     const editedEvents = await db.selectFrom("investigation_events").select("sequence")

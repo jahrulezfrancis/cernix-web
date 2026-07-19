@@ -5,6 +5,7 @@ import { PLAN_SCHEMA_VERSION } from "@/lib/contracts/investigation-plan";
 import type { Database } from "@/server/db/types";
 import { createDisposableTestDatabase } from "@/server/db/test-database";
 import { migrateToLatest } from "@/server/db/migrate";
+import { TEST_OWNER_USER_ID, seedTestOwner } from "@/server/auth/test-fixtures";
 import { InvestigationRepository } from "@/server/persistence/investigation-repository";
 import { InvestigationPlanRepository } from "@/server/persistence/investigation-plan-repository";
 import { RepositorySnapshotRepository } from "@/server/persistence/repository-snapshot-repository";
@@ -53,9 +54,9 @@ function planArtifact(investigationId: string, claimId: string) {
   };
 }
 async function atPlanning() {
-  const created = await investigations.createInvestigation(input, randomUUID());
-  await investigations.approveClaim(created.id, approval);
-  const investigation = await investigations.startInvestigation(created.id, randomUUID());
+  const created = await investigations.createInvestigation(input, randomUUID(), TEST_OWNER_USER_ID);
+  await investigations.approveClaim(created.id, approval, TEST_OWNER_USER_ID);
+  const investigation = await investigations.startInvestigation(created.id, randomUUID(), TEST_OWNER_USER_ID);
   const snapshotJob = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", created.id)
     .where("kind", "=", "repository_snapshot").executeTakeFirstOrThrow();
   await new RepositorySnapshotRepository(db).createForInvestigation(created.id, artifact());
@@ -75,7 +76,11 @@ beforeAll(async () => {
   planningJobs = new PlanningJobRepository(db);
   await migrateToLatest(db);
 });
-beforeEach(truncate);
+beforeEach(async () => {
+  await migrateToLatest(db);
+  await truncate();
+  await seedTestOwner(db);
+});
 afterAll(async () => { await harness?.cleanup(); });
 
 describe.sequential("durable planning job orchestration", () => {
@@ -101,7 +106,7 @@ describe.sequential("durable planning job orchestration", () => {
       modelId: "qwen-plus", promptVersion: "planning-v1", attemptId: claimed.claim.attemptId,
     });
     expect(await planningJobs.completeSuccess(planningJob.id, claimed.claim.leaseToken)).toEqual({ kind: "updated", status: "succeeded" });
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("investigating");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("investigating");
     const events = await db.selectFrom("investigation_events").selectAll().where("investigation_id", "=", investigation.id)
       .where("type", "=", "lifecycle_transitioned").where("stage", "=", "investigating").execute();
     expect(events).toHaveLength(1);
@@ -195,7 +200,7 @@ describe.sequential("durable planning job orchestration", () => {
     });
     await expect(worker.runOnce(new AbortController().signal)).resolves.toMatchObject({ status: "succeeded" });
     expect(calls).toBe(0);
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("investigating");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("investigating");
     const evidenceJob = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", investigation.id)
       .where("kind", "=", "investigation_evidence").executeTakeFirst();
     expect(evidenceJob).toMatchObject({ status: "queued" });
@@ -208,7 +213,7 @@ describe.sequential("durable planning job orchestration", () => {
     const claim = await planningJobs.claimNext({ workerOwner: "planning-retry", leaseSeconds: 30 });
     expect(claim.kind).toBe("claimed"); if (claim.kind !== "claimed") return;
     await planningJobs.scheduleRetry(planningJob.id, claim.claim.leaseToken, "qwen_unavailable", 5);
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("planning");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("planning");
 
     await truncate();
     const next = await atPlanning();
@@ -216,7 +221,7 @@ describe.sequential("durable planning job orchestration", () => {
     expect(failureClaim.kind).toBe("claimed"); if (failureClaim.kind !== "claimed") return;
     expect(await planningJobs.completeFailure(next.planningJob.id, failureClaim.claim.leaseToken, "plan_schema_invalid"))
       .toEqual({ kind: "updated", status: "failed" });
-    expect((await investigations.getInvestigation(next.investigation.id)).status).toBe("failed");
+    expect((await investigations.getInvestigation(next.investigation.id, TEST_OWNER_USER_ID)).status).toBe("failed");
   });
 
   it("rolls back injected planning finalization failure atomically", async () => {
@@ -232,6 +237,6 @@ describe.sequential("durable planning job orchestration", () => {
     expect(error).toMatchObject({ code: "internal_error" });
     await db.schema.alterTable("investigation_events").dropConstraint("force_planning_event_failure").execute();
     expect((await planningJobs.getJob(planningJob.id))!.status).toBe("leased");
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("planning");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("planning");
   });
 });

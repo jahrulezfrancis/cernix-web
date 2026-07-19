@@ -21,7 +21,9 @@ const expectedDefinitions: Record<
   { httpStatus: number; publicMessage: string }
 > = {
   malformed_input: { httpStatus: 400, publicMessage: "The request is malformed." },
+  payload_too_large: { httpStatus: 413, publicMessage: "The request payload is too large." },
   invalid_repository_url: { httpStatus: 422, publicMessage: "Enter a valid GitHub repository URL." },
+  unauthenticated: { httpStatus: 401, publicMessage: "Sign in to continue." },
   invalid_claim: { httpStatus: 422, publicMessage: "The claim is invalid." },
   invalid_idempotency_key: { httpStatus: 422, publicMessage: "Enter a valid idempotency key." },
   invalid_lifecycle_transition: { httpStatus: 409, publicMessage: "The requested lifecycle transition is not allowed." },

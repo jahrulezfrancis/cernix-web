@@ -5,6 +5,7 @@ import { PLAN_SCHEMA_VERSION } from "@/lib/contracts/investigation-plan";
 import type { Database } from "@/server/db/types";
 import { createDisposableTestDatabase } from "@/server/db/test-database";
 import { migrateToLatest } from "@/server/db/migrate";
+import { TEST_OWNER_USER_ID, seedTestOwner } from "@/server/auth/test-fixtures";
 import { InvestigationRepository } from "@/server/persistence/investigation-repository";
 import { InvestigationPlanRepository } from "@/server/persistence/investigation-plan-repository";
 import { RepositorySnapshotRepository } from "@/server/persistence/repository-snapshot-repository";
@@ -55,9 +56,9 @@ function planArtifact(investigationId: string, claimId: string) {
   };
 }
 async function atInvestigating() {
-  const created = await investigations.createInvestigation(input, randomUUID());
-  await investigations.approveClaim(created.id, approval);
-  const investigation = await investigations.startInvestigation(created.id, randomUUID());
+  const created = await investigations.createInvestigation(input, randomUUID(), TEST_OWNER_USER_ID);
+  await investigations.approveClaim(created.id, approval, TEST_OWNER_USER_ID);
+  const investigation = await investigations.startInvestigation(created.id, randomUUID(), TEST_OWNER_USER_ID);
   const snapshotJob = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", created.id)
     .where("kind", "=", "repository_snapshot").executeTakeFirstOrThrow();
   await new RepositorySnapshotRepository(db).createForInvestigation(created.id, artifact());
@@ -86,7 +87,11 @@ beforeAll(async () => {
   evidenceJobs = new EvidenceJobRepository(db);
   await migrateToLatest(db);
 });
-beforeEach(truncate);
+beforeEach(async () => {
+  await migrateToLatest(db);
+  await truncate();
+  await seedTestOwner(db);
+});
 afterAll(async () => { await harness?.cleanup(); });
 
 describe.sequential("durable evidence job orchestration", () => {
@@ -105,7 +110,7 @@ describe.sequential("durable evidence job orchestration", () => {
 
   it("enqueues evidence jobs and task runs after planning succeeds", async () => {
     const { investigation, evidenceJob } = await atInvestigating();
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("investigating");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("investigating");
     expect(evidenceJob.status).toBe("queued");
     const runs = await db.selectFrom("evidence_task_runs").selectAll().where("investigation_id", "=", investigation.id).execute();
     expect(runs).toHaveLength(1);
@@ -134,7 +139,7 @@ describe.sequential("durable evidence job orchestration", () => {
     }).execute();
     const claimed = await evidenceJobs.claimNext({ workerOwner: "evidence-worker", leaseSeconds: 60 });
     expect(claimed).toMatchObject({ kind: "reconciled", status: "succeeded" });
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("challenging");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("challenging");
     expect((await evidenceJobs.getJob(evidenceJob.id))!.status).toBe("succeeded");
     const skepticJob = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", investigation.id)
       .where("kind", "=", "investigation_skeptic").executeTakeFirst();

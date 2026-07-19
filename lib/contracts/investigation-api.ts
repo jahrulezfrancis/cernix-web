@@ -219,10 +219,12 @@ export const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
 export const PublicErrorCodeSchema = z.enum([
   "malformed_input",
+  "payload_too_large",
   "invalid_repository_url",
   "invalid_claim",
   "invalid_idempotency_key",
   "invalid_lifecycle_transition",
+  "unauthenticated",
   "not_found",
   "conflict",
   "rate_limited",
@@ -238,7 +240,9 @@ type PublicErrorDefinition = Readonly<{
 
 export const PUBLIC_ERROR_DEFINITIONS = Object.freeze({
   malformed_input: Object.freeze({ httpStatus: 400, publicMessage: "The request is malformed." }),
+  payload_too_large: Object.freeze({ httpStatus: 413, publicMessage: "The request payload is too large." }),
   invalid_repository_url: Object.freeze({ httpStatus: 422, publicMessage: "Enter a valid GitHub repository URL." }),
+  unauthenticated: Object.freeze({ httpStatus: 401, publicMessage: "Sign in to continue." }),
   invalid_claim: Object.freeze({ httpStatus: 422, publicMessage: "The claim is invalid." }),
   invalid_idempotency_key: Object.freeze({ httpStatus: 422, publicMessage: "Enter a valid idempotency key." }),
   invalid_lifecycle_transition: Object.freeze({ httpStatus: 409, publicMessage: "The requested lifecycle transition is not allowed." }),

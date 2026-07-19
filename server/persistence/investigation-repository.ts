@@ -33,10 +33,14 @@ async function appendEvent(tx: Transaction<Database>, id: string, rawEvent: Publ
     investigation_id: id, type, stage, public_payload: JSON.stringify(payload), created_at: now,
   }).execute();
 }
-async function lockedInvestigation(tx: Transaction<Database>, id: string) {
+async function lockedInvestigation(tx: Transaction<Database>, id: string, ownerUserId: string) {
   const row = await tx.selectFrom("investigations").selectAll().where("id", "=", id).forUpdate().executeTakeFirst();
-  if (!row) throw new ApplicationError("not_found", {});
+  if (!row || row.owner_user_id !== ownerUserId) throw new ApplicationError("not_found", {});
   return row;
+}
+async function assertInvestigationOwner(db: Db, id: string, ownerUserId: string) {
+  const row = await db.selectFrom("investigations").select("owner_user_id").where("id", "=", id).executeTakeFirst();
+  if (!row || row.owner_user_id !== ownerUserId) throw new ApplicationError("not_found", {});
 }
 async function mapInvestigation(db: Db, id: string): Promise<InvestigationReadModel> {
   const row = await db.selectFrom("investigations").innerJoin("manual_claims", "manual_claims.investigation_id", "investigations.id")
@@ -65,7 +69,7 @@ export class InvestigationRepository {
     }
   }
 
-  async createInvestigation(raw: unknown, rawKey: unknown) {
+  async createInvestigation(raw: unknown, rawKey: unknown, ownerUserId: string) {
     const input = CreateInvestigationRequestSchema.parse(raw);
     const key = IdempotencyKeySchema.parse(rawKey);
     const ref = parseGitHubRepositoryRef(input.repositoryUrl);
@@ -73,8 +77,9 @@ export class InvestigationRepository {
       requestedRef: input.repositoryRef, statement: input.claim.statement, qualifiers: [] });
     try {
       return await this.db.transaction().execute(async (tx) => {
-        await lockKey(tx, `create:${key}`);
+        await lockKey(tx, `create:${ownerUserId}:${key}`);
         const existing = await tx.selectFrom("idempotency_records").selectAll()
+          .where("owner_user_id", "=", ownerUserId)
           .where("scope", "=", "create").where("idempotency_key", "=", key).executeTakeFirst();
         if (existing) {
           if (existing.request_hash_sha256 !== hash || !existing.investigation_id) throw new ApplicationError("conflict", {});
@@ -82,7 +87,7 @@ export class InvestigationRepository {
         }
         const now = this.clock(), id = randomUUID();
         await tx.insertInto("investigations").values({
-          id, status: "awaiting_claim_review", repository_owner: ref.owner, repository_name: ref.repo,
+          id, owner_user_id: ownerUserId, status: "awaiting_claim_review", repository_owner: ref.owner, repository_name: ref.repo,
           repository_canonical_url: ref.canonicalUrl, requested_ref: input.repositoryRef ?? null,
           created_at: now, updated_at: now, started_at: null, completed_at: null, failure_code: null,
         }).execute();
@@ -92,7 +97,7 @@ export class InvestigationRepository {
         }).execute();
         await appendEvent(tx, id, { type: "investigation_created", stage: "awaiting_claim_review", payload: { claimCount: 1 } }, now);
         await tx.insertInto("idempotency_records").values({
-          scope: "create", idempotency_key: key, request_hash_sha256: hash,
+          owner_user_id: ownerUserId, scope: "create", idempotency_key: key, request_hash_sha256: hash,
           investigation_id: id, result_kind: "investigation_created", created_at: now,
         }).execute();
         return mapInvestigation(tx, id);
@@ -100,11 +105,11 @@ export class InvestigationRepository {
     } catch (error) { return domainError(error); }
   }
 
-  async approveClaim(idRaw: unknown, raw: unknown) {
+  async approveClaim(idRaw: unknown, raw: unknown, ownerUserId: string) {
     const id = InvestigationIdSchema.parse(idRaw), input = ClaimApprovalRequestSchema.parse(raw);
     try {
       return await this.db.transaction().execute(async (tx) => {
-        const investigation = await lockedInvestigation(tx, id);
+        const investigation = await lockedInvestigation(tx, id, ownerUserId);
         if (investigation.status !== "awaiting_claim_review") throw new ApplicationError("invalid_lifecycle_transition", {});
         const claim = await tx.selectFrom("manual_claims").selectAll().where("investigation_id", "=", id).executeTakeFirstOrThrow();
         const identical = claim.statement === input.statement &&
@@ -125,19 +130,20 @@ export class InvestigationRepository {
     } catch (error) { return domainError(error); }
   }
 
-  async startInvestigation(idRaw: unknown, keyRaw: unknown) {
+  async startInvestigation(idRaw: unknown, keyRaw: unknown, ownerUserId: string) {
     const id = InvestigationIdSchema.parse(idRaw), key = IdempotencyKeySchema.parse(keyRaw);
     const scope = `start:${id}`, hash = hashStartInput(id);
     try {
       return await this.db.transaction().execute(async (tx) => {
-        await lockKey(tx, `${scope}:${key}`);
+        await lockKey(tx, `${scope}:${ownerUserId}:${key}`);
         const record = await tx.selectFrom("idempotency_records").selectAll()
+          .where("owner_user_id", "=", ownerUserId)
           .where("scope", "=", scope).where("idempotency_key", "=", key).executeTakeFirst();
         if (record) {
           if (record.request_hash_sha256 !== hash) throw new ApplicationError("conflict", {});
           return mapInvestigation(tx, id);
         }
-        const investigation = await lockedInvestigation(tx, id);
+        const investigation = await lockedInvestigation(tx, id, ownerUserId);
         if (investigation.status === "failed") throw new ApplicationError("invalid_lifecycle_transition", {});
         if (investigation.status !== "awaiting_claim_review") return mapInvestigation(tx, id);
         if (investigation.status === "awaiting_claim_review") {
@@ -159,7 +165,7 @@ export class InvestigationRepository {
           }, now);
         }
         await tx.insertInto("idempotency_records").values({
-          scope, idempotency_key: key, request_hash_sha256: hash, investigation_id: id,
+          owner_user_id: ownerUserId, scope, idempotency_key: key, request_hash_sha256: hash, investigation_id: id,
           result_kind: "investigation_started", created_at: this.clock(),
         }).execute();
         return mapInvestigation(tx, id);
@@ -168,12 +174,15 @@ export class InvestigationRepository {
   }
 
   async transitionInvestigation(idRaw: unknown, to: BackendLifecycleStatus, options: {
-    expectedStatus?: BackendLifecycleStatus; failureCode?: string;
+    expectedStatus?: BackendLifecycleStatus; failureCode?: string; ownerUserId?: string;
   } = {}) {
     const id = InvestigationIdSchema.parse(idRaw);
     try {
       return await this.db.transaction().execute(async (tx) => {
-        const current = await lockedInvestigation(tx, id);
+        const current = options.ownerUserId
+          ? await lockedInvestigation(tx, id, options.ownerUserId)
+          : await tx.selectFrom("investigations").selectAll().where("id", "=", id).forUpdate().executeTakeFirst()
+            ?? (() => { throw new ApplicationError("not_found", {}); })();
         if (options.expectedStatus && current.status !== options.expectedStatus) throw new ApplicationError("conflict", {});
         if (current.status === to) return mapInvestigation(tx, id);
         if (!canTransitionBackendLifecycle(current.status, to)) throw new ApplicationError("invalid_lifecycle_transition", {});
@@ -194,12 +203,15 @@ export class InvestigationRepository {
     } catch (error) { return domainError(error); }
   }
 
-  async getInvestigation(idRaw: unknown) {
+  async getInvestigation(idRaw: unknown, ownerUserId: string) {
     const id = InvestigationIdSchema.parse(idRaw);
-    try { return await mapInvestigation(this.db, id); } catch (error) { return domainError(error); }
+    try {
+      await assertInvestigationOwner(this.db, id, ownerUserId);
+      return await mapInvestigation(this.db, id);
+    } catch (error) { return domainError(error); }
   }
 
-  async listInvestigations(limitRaw = 50) {
+  async listInvestigations(ownerUserId: string, limitRaw = 50) {
     const limit = Math.min(boundEventLimit(limitRaw), 50);
     try {
       const rows = await this.db.selectFrom("investigations")
@@ -210,6 +222,7 @@ export class InvestigationRepository {
           "investigations.updated_at", "started_at", "completed_at", "failure_code",
           "manual_claims.id as claim_id", "statement", "preserved_qualifiers", "approved_at",
         ])
+        .where("investigations.owner_user_id", "=", ownerUserId)
         .orderBy("investigations.updated_at", "desc")
         .orderBy("investigations.id", "desc")
         .limit(limit)
@@ -233,9 +246,9 @@ export class InvestigationRepository {
     } catch (error) { return domainError(error); }
   }
 
-  async getEvents(idRaw: unknown, after?: string, limit = 50) {
+  async getEvents(idRaw: unknown, ownerUserId: string, after?: string, limit = 50) {
     const id = InvestigationIdSchema.parse(idRaw), cursor = parseEventCursor(after), bounded = Math.min(boundEventLimit(limit), 50);
-    await this.getInvestigation(id);
+    await this.getInvestigation(id, ownerUserId);
     try {
       const events = await this.db.selectFrom("investigation_events").selectAll()
         .where("investigation_id", "=", id).where("sequence", ">", cursor)

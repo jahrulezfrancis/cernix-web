@@ -7,6 +7,7 @@ import { validateSkepticArtifact } from "@/lib/contracts/skeptic-challenge";
 import type { Database } from "@/server/db/types";
 import { createDisposableTestDatabase } from "@/server/db/test-database";
 import { migrateToLatest } from "@/server/db/migrate";
+import { TEST_OWNER_USER_ID, seedTestOwner } from "@/server/auth/test-fixtures";
 import { InvestigationRepository } from "@/server/persistence/investigation-repository";
 import { InvestigationPlanRepository } from "@/server/persistence/investigation-plan-repository";
 import { RepositorySnapshotRepository } from "@/server/persistence/repository-snapshot-repository";
@@ -62,9 +63,9 @@ function planArtifact(investigationId: string, claimId: string) {
   };
 }
 async function atChallenging() {
-  const created = await investigations.createInvestigation(input, randomUUID());
-  await investigations.approveClaim(created.id, approval);
-  const investigation = await investigations.startInvestigation(created.id, randomUUID());
+  const created = await investigations.createInvestigation(input, randomUUID(), TEST_OWNER_USER_ID);
+  await investigations.approveClaim(created.id, approval, TEST_OWNER_USER_ID);
+  const investigation = await investigations.startInvestigation(created.id, randomUUID(), TEST_OWNER_USER_ID);
   const snapshotJob = await db.selectFrom("investigation_jobs").selectAll().where("investigation_id", "=", created.id)
     .where("kind", "=", "repository_snapshot").executeTakeFirstOrThrow();
   await new RepositorySnapshotRepository(db).createForInvestigation(created.id, artifact());
@@ -116,7 +117,11 @@ beforeAll(async () => {
   skepticRepository = new SkepticRepository(db);
   await migrateToLatest(db);
 });
-beforeEach(truncate);
+beforeEach(async () => {
+  await migrateToLatest(db);
+  await truncate();
+  await seedTestOwner(db);
+});
 afterAll(async () => { await harness?.cleanup(); });
 
 describe.sequential("durable skeptic job orchestration", () => {
@@ -134,7 +139,7 @@ describe.sequential("durable skeptic job orchestration", () => {
 
   it("enqueues skeptic jobs when evidence collection completes", async () => {
     const { investigation, skepticJob } = await atChallenging();
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("challenging");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("challenging");
     expect(skepticJob.status).toBe("queued");
     const started = await db.selectFrom("investigation_events").selectAll().where("investigation_id", "=", investigation.id)
       .where("type", "=", "investigation_started").where("stage", "=", "challenging").execute();
@@ -160,7 +165,7 @@ describe.sequential("durable skeptic job orchestration", () => {
       modelId: "qwen-plus", promptVersion: "skeptic-v1", attemptId: claimed.claim.attemptId,
     });
     expect(await skepticJobs.completeSuccess(skepticJob.id, claimed.claim.leaseToken)).toEqual({ kind: "updated", status: "succeeded" });
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("judging");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("judging");
   });
 
   it("routes reinvestigation through supplemental evidence to judging", async () => {
@@ -181,7 +186,7 @@ describe.sequential("durable skeptic job orchestration", () => {
       modelId: "qwen-plus", promptVersion: "skeptic-v1", attemptId: claimed.claim.attemptId,
     });
     expect(await skepticJobs.completeSuccess(skepticJob.id, claimed.claim.leaseToken)).toEqual({ kind: "updated", status: "succeeded" });
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("reinvestigating");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("reinvestigating");
     const reinvestigation = await db.selectFrom("investigations").select("reinvestigation_cycle_count")
       .where("id", "=", investigation.id).executeTakeFirstOrThrow();
     expect(reinvestigation.reinvestigation_cycle_count).toBe(1);
@@ -202,7 +207,7 @@ describe.sequential("durable skeptic job orchestration", () => {
     }).execute();
     const evidenceClaim = await evidenceJobs.claimNext({ workerOwner: "evidence-worker", leaseSeconds: 60 });
     expect(evidenceClaim).toMatchObject({ kind: "reconciled", status: "succeeded" });
-    expect((await investigations.getInvestigation(investigation.id)).status).toBe("judging");
+    expect((await investigations.getInvestigation(investigation.id, TEST_OWNER_USER_ID)).status).toBe("judging");
     expect((await evidenceJobs.getJob(evidenceJob.id))!.status).toBe("succeeded");
   });
 });
