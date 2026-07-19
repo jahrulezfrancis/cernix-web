@@ -16,6 +16,7 @@ export interface InvestigationsTable {
   started_at: Timestamp | null;
   completed_at: Timestamp | null;
   failure_code: string | null;
+  reinvestigation_cycle_count: Generated<number>;
 }
 export interface ManualClaimsTable {
   id: string;
@@ -49,7 +50,7 @@ export interface IdempotencyRecordsTable {
 export interface InvestigationJobsTable {
   id: string;
   investigation_id: string;
-  kind: "repository_snapshot" | "investigation_planning" | "investigation_evidence";
+  kind: "repository_snapshot" | "investigation_planning" | "investigation_evidence" | "investigation_skeptic";
   status: "queued" | "leased" | "retry_wait" | "succeeded" | "failed" | "cancelled";
   attempt_count: Generated<number>;
   max_attempts: Generated<number>;
@@ -209,6 +210,59 @@ export interface CounterevidenceItemsTable {
   description: string;
   severity: "minor" | "material" | "critical";
 }
+export interface SkepticJobAttemptsTable {
+  id: Generated<string>;
+  job_id: string;
+  investigation_id: string;
+  attempt_number: number;
+  lease_token: string;
+  worker_owner: string;
+  status: "leased" | "succeeded" | "retry_scheduled" | "failed" | "lease_expired" | "cancelled";
+  started_at: Timestamp;
+  last_heartbeat_at: Timestamp;
+  finished_at: Timestamp | null;
+  failure_code: string | null;
+  next_available_at: Timestamp | null;
+}
+export interface SkepticAnalysesTable {
+  id: string;
+  investigation_id: string;
+  plan_id: string;
+  snapshot_id: string;
+  claim_id: string;
+  manifest_hash_sha256: string;
+  commit_sha: string;
+  schema_version: number;
+  model_id: string;
+  prompt_version: string;
+  outcome: "cleared_for_judgment" | "reinvestigation_required";
+  reinvestigation_cycle: number;
+  challenge_count: number;
+  canonical_artifact: ColumnType<Record<string, unknown>, string, string>;
+  created_at: Timestamp;
+}
+export interface SkepticChallengesTable {
+  id: string;
+  analysis_id: string;
+  investigation_id: string;
+  claim_id: string;
+  challenge_key: string;
+  challenge_type: string;
+  severity: "critical" | "major" | "minor";
+  summary: string;
+  reasoning: string;
+  evidence_refs: ColumnType<unknown[], string, string>;
+  related_candidate_keys: ColumnType<string[], string, string>;
+  requested_reinvestigation: boolean;
+  created_at: Timestamp;
+}
+export interface ChallengeResolutionsTable {
+  id: string;
+  challenge_id: string;
+  disposition: "accepted" | "deferred_to_judge" | "triggers_reinvestigation";
+  resolution_note: string;
+  created_at: Timestamp;
+}
 export interface RepositorySnapshotsTable {
   id: string; investigation_id: string; github_repository_id: string;
   canonical_owner: string; canonical_repository: string; canonical_url: string;
@@ -242,6 +296,10 @@ export interface Database {
   evidence_excerpts: EvidenceExcerptsTable;
   evidence_gaps: EvidenceGapsTable;
   counterevidence_items: CounterevidenceItemsTable;
+  skeptic_job_attempts: SkepticJobAttemptsTable;
+  skeptic_analyses: SkepticAnalysesTable;
+  skeptic_challenges: SkepticChallengesTable;
+  challenge_resolutions: ChallengeResolutionsTable;
   investigation_plans: InvestigationPlansTable;
   verification_obligations: VerificationObligationsTable;
   evidence_tasks: EvidenceTasksTable;
