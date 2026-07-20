@@ -1,5 +1,6 @@
 import { Kysely, PostgresDialect } from "kysely";
 import { Pool, type PoolConfig } from "pg";
+import { ApplicationError } from "@/server/errors";
 import type { Database } from "./types";
 import { readDatabaseUrl } from "./config";
 
@@ -10,12 +11,23 @@ type DatabaseGlobal = typeof globalThis & { [DATABASE_KEY]?: DatabaseInstance };
 let productionSingleton: DatabaseInstance | undefined;
 let databaseFactory: DatabaseFactory = () => createDatabase();
 
+function readPoolMax(environment: NodeJS.ProcessEnv = process.env): number {
+  const raw = environment.DATABASE_POOL_MAX;
+  if (raw === undefined || raw === "") return 10;
+  if (!/^(?:0|[1-9]\d*)$/.test(raw)) throw new ApplicationError("dependency_unavailable", {});
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 50) {
+    throw new ApplicationError("dependency_unavailable", {});
+  }
+  return value;
+}
+
 export function createDatabase(connection: string | PoolConfig = readDatabaseUrl()): DatabaseInstance {
-  const pool = new Pool({
-    ...(typeof connection === "string" ? { connectionString: connection } : connection),
-    max: 10,
-    idleTimeoutMillis: 30_000,
-  });
+  const base: PoolConfig =
+    typeof connection === "string" ? { connectionString: connection } : { ...connection };
+  if (base.max === undefined) base.max = readPoolMax();
+  if (base.idleTimeoutMillis === undefined) base.idleTimeoutMillis = 30_000;
+  const pool = new Pool(base);
   return { db: new Kysely<Database>({ dialect: new PostgresDialect({ pool }) }), pool };
 }
 

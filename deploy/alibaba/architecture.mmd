@@ -1,0 +1,45 @@
+flowchart LR
+  subgraph Public["Public path"]
+    Judge["Judge browser"]
+    SG["Alibaba ECS security group<br/>inbound 80 (443 reserved)"]
+    Nginx["Nginx container :80"]
+  end
+
+  subgraph EdgeNet["Docker network: edge"]
+    Nginx
+    Web["Next.js web :3000<br/>standalone / non-root"]
+  end
+
+  subgraph BackendNet["Docker network: backend — private"]
+    Web
+    PG[("PostgreSQL 17<br/>:5432 not published")]
+    Migrate["migrate one-shot"]
+    WS["worker-snapshot"]
+    WP["worker-planning"]
+    WE["worker-evidence"]
+    WSk["worker-skeptic"]
+    WJ["worker-judge"]
+  end
+
+  subgraph External["External APIs"]
+    GH["GitHub API<br/>exact-commit snapshot"]
+    Qwen["Qwen Cloud / DashScope<br/>intl allowlisted origin"]
+  end
+
+  Judge --> SG --> Nginx --> Web
+  Web --> PG
+  Migrate --> PG
+  WS --> PG
+  WP --> PG
+  WE --> PG
+  WSk --> PG
+  WJ --> PG
+  WS --> GH
+  WP --> Qwen
+  WE --> Qwen
+  WSk --> Qwen
+  WJ --> Qwen
+
+  SnapshotBoundary["Immutable snapshot boundary<br/>admitted files + commit SHA"]
+  WS -.-> SnapshotBoundary
+  SnapshotBoundary -.-> WP

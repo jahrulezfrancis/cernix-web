@@ -63,3 +63,88 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  deployment:
+    name: Deployment package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Shell syntax for deploy scripts
+        run: |
+          bash -n deploy/alibaba/deploy.sh
+          bash -n deploy/alibaba/update.sh
+          bash -n deploy/alibaba/verify.sh
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build web image target
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: web
+          push: false
+          tags: cernix-web:ci
+          cache-from: type=gha,scope=cernix-web
+          cache-to: type=gha,mode=max,scope=cernix-web
+
+      - name: Build worker image target
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: worker
+          push: false
+          tags: cernix-worker:ci
+          cache-from: type=gha,scope=cernix-worker
+          cache-to: type=gha,mode=max,scope=cernix-worker
+
+      - name: Validate production Compose (dummy env, no secret echo)
+        env:
+          CERNIX_COMPOSE_ENV_FILE: .env.production.example
+        run: |
+          # Substitute placeholders so Compose interpolation succeeds without real secrets.
+          sed \
+            -e 's/PUBLIC_IP_PLACEHOLDER/203.0.113.10/g' \
+            -e 's/replace_with_strong_value/CiComposePass_9x/g' \
+            -e 's/replace_with_at_least_32_random_characters/CiComposeAuthSecret_at_least_32_chars/g' \
+            -e 's/replace_with_github_oauth_client_id/ci_oauth_client_id/g' \
+            -e 's/replace_with_github_oauth_client_secret/ci_oauth_client_secret/g' \
+            -e 's/replace_with_dashscope_api_key/ci_qwen_key/g' \
+            .env.production.example > /tmp/cernix-compose.env
+          chmod 600 /tmp/cernix-compose.env
+          export CERNIX_COMPOSE_ENV_FILE=/tmp/cernix-compose.env
+          docker compose --env-file /tmp/cernix-compose.env -f compose.production.yml config --quiet
+          rendered="$(docker compose --env-file /tmp/cernix-compose.env -f compose.production.yml config)"
+          printf '%s\n' "$rendered" | grep -E 'published: 80|target: 80' >/dev/null
+          ! printf '%s\n' "$rendered" | grep -E 'published: 3000|published: 5432'
+          printf '%s\n' "$rendered" | grep -q 'worker-snapshot'
+          printf '%s\n' "$rendered" | grep -q 'worker-planning'
+          printf '%s\n' "$rendered" | grep -q 'worker-evidence'
+          printf '%s\n' "$rendered" | grep -q 'worker-skeptic'
+          printf '%s\n' "$rendered" | grep -q 'worker-judge'
+          printf '%s\n' "$rendered" | grep -q 'service_completed_successfully'
+          # Confirm final image users without printing env values.
+          docker image inspect cernix-web:ci --format '{{.Config.User}}' | grep -qx 'cernix'
+          docker image inspect cernix-worker:ci --format '{{.Config.User}}' | grep -qx 'cernix'
+          rm -f /tmp/cernix-compose.env
+
+      - name: Assert build context excludes env files
+        run: |
+          # docker build context listing via a no-op stage is heavy; use .dockerignore contract + archive probe.
+          tar --exclude-from=.dockerignore -cf /tmp/cernix-context.tar .
+          ! tar -tf /tmp/cernix-context.tar | grep -E '(^|/)\.env($|\.local$|\.production$)'
+          tar -tf /tmp/cernix-context.tar | grep -E '(^|/)\.env\.example$' >/dev/null
+          rm -f /tmp/cernix-context.tar
