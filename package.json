@@ -6,7 +6,7 @@
   "keywords": [
     "\\"
   ],
-  "license": "ISC",
+  "license": "MIT",
   "engines": {
     "node": ">=20.9.0"
   },

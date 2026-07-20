@@ -23,15 +23,11 @@ const SUBMISSION_TYPES = [
   { value: "other", label: "Other" },
 ];
 
-const EXAMPLE_DESCRIPTION = `This project is a multi-agent verification platform built for the Alibaba Cloud Hackathon.
+const EXAMPLE_DESCRIPTION = `This repository is a TypeScript web application with a PostgreSQL-backed API.
 
-The platform automatically verifies every pull request using a combination of static analysis and dynamic testing. We use Alibaba Cloud ECS for production deployment, with Alibaba Cloud OSS for artifact storage.
+The README states that all mutations require authentication, that investigations are owner-scoped, and that durable workers process snapshot, planning, evidence, skeptic, and judge stages asynchronously.
 
-The multi-agent workflow coordinates five specialized agents: a Claim Analyst, Repository Investigator, Delivery Investigator, Skeptic Agent, and Evidence Judge.
-
-All data is end-to-end encrypted using industry-standard AES-256. Test coverage exceeds 80% across all modules, verified by our CI pipeline. No critical security vulnerabilities exist in our production dependencies as confirmed by our latest audit.
-
-Milestones 1 through 3 have been completed on time, with all deliverables committed before the respective deadlines.`;
+The project uses Qwen via Alibaba DashScope for structured planning and judgment over admitted repository files only.`;
 
 const GITHUB_REPO_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?$/i;
 
@@ -47,14 +43,14 @@ export default function NewInvestigationPage() {
   const [submissionType, setSubmissionType] = useState<SubmissionType>("hackathon_submission");
   const [description, setDescription] = useState(EXAMPLE_DESCRIPTION);
   const [focusQuestion, setFocusQuestion] = useState(
-    "Verify whether the project genuinely implements a multi-agent workflow and uses Alibaba Cloud in production."
+    "Verify whether investigation API routes enforce owner-scoped access for every read and mutation."
   );
 
   const [validationState, setValidationState] = useState<ValidationState>("idle");
   const [validationError, setValidationError] = useState("");
 
-  const [extracting, setExtracting] = useState(false);
-  const [storageWarning, setStorageWarning] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [submitError, setSubmitError] = useState("");
 
   useEffect(() => {
     const trimmed = repoUrl.trim();
@@ -72,12 +68,13 @@ export default function NewInvestigationPage() {
     setValidationError("Enter a valid public GitHub repository URL.");
   }, [repoUrl]);
 
-  const handleExtractClaims = async () => {
+  const handleCreate = async () => {
     if (validationState !== "success") return;
-    setExtracting(true);
-    setStorageWarning("");
+    const claimStatement = (focusQuestion.trim() || description.trim()).slice(0, 4000);
+    if (!claimStatement.trim()) return;
+    setCreating(true);
+    setSubmitError("");
     try {
-      const claimStatement = (focusQuestion.trim() || description.trim()).slice(0, 4000);
       const created = await createBackendInvestigation({
         repositoryUrl: repoUrl.trim(),
         repositoryRef: branch.trim() || undefined,
@@ -85,14 +82,15 @@ export default function NewInvestigationPage() {
       }, crypto.randomUUID());
       router.push(`/investigations/${created.id}/claims`);
     } catch (error) {
-      setStorageWarning(error instanceof ApiRequestError ? error.message : "Unable to create investigation.");
-      setExtracting(false);
+      setSubmitError(error instanceof ApiRequestError ? error.message : "Unable to create investigation.");
+      setCreating(false);
     }
   };
   const canSubmit =
     validationState === "success" &&
     description.trim().length > 20 &&
-    !extracting;
+    (focusQuestion.trim().length > 0 || description.trim().length > 40) &&
+    !creating;
 
   return (
     <AppShell title="New investigation">
@@ -102,8 +100,8 @@ export default function NewInvestigationPage() {
             New investigation
           </h1>
           <p className="mt-1 text-sm text-[#86ADC2]">
-            Provide a public repository and a submission document. Cernix will
-            extract technical claims and prepare them for investigation.
+            Provide a public repository, submission context, and one claim to
+            verify. You will review the claim before workers start.
           </p>
         </div>
 
@@ -111,7 +109,7 @@ export default function NewInvestigationPage() {
           className="flex flex-col gap-5"
           onSubmit={(e) => {
             e.preventDefault();
-            if (canSubmit) handleExtractClaims();
+            if (canSubmit) handleCreate();
           }}
         >
           {/* Repository URL */}
@@ -231,22 +229,22 @@ export default function NewInvestigationPage() {
               htmlFor="focus"
               className="font-mono text-xs text-[#86ADC2]"
             >
-              Focus question{" "}
-              <span className="text-[#4F7590]">(optional)</span>
+              Focus claim{" "}
+              <span className="text-[#4F7590]">(primary — used as the investigation claim)</span>
             </label>
             <input
               id="focus"
               type="text"
               value={focusQuestion}
               onChange={(e) => setFocusQuestion(e.target.value)}
-              placeholder="E.g. Verify whether the multi-agent workflow is genuinely implemented."
+              placeholder="E.g. Verify whether API routes enforce owner-scoped access."
               className="w-full rounded-lg border border-[#1E4560] bg-[#082031] px-3 py-2 text-sm text-[#E9F3F8] placeholder-[#4F7590] outline-none transition-colors focus:border-[#FF6B1A]"
             />
           </div>
 
-          {storageWarning && (
+          {submitError && (
             <p className="rounded border border-[#FFC94D]/30 bg-[#3A2A0E] px-3 py-2 font-mono text-xs text-[#FFC94D]" role="status">
-              {storageWarning}
+              {submitError}
             </p>
           )}
 
@@ -257,13 +255,13 @@ export default function NewInvestigationPage() {
               disabled={!canSubmit}
               className="flex items-center gap-2 rounded-lg bg-[#FF6B1A] px-5 py-2.5 text-sm font-medium text-[#0B1E2E] transition-colors hover:bg-[#FF8540] disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {extracting ? (
+              {creating ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                  Extracting claims...
+                  Creating investigation...
                 </>
               ) : (
-                "Create investigation"
+                "Continue to claim review"
               )}
             </button>
             {validationState === "idle" ? (

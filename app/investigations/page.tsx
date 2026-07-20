@@ -3,11 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
-import { DASHBOARD_INVESTIGATIONS } from "@/lib/mock-data";
-import { VerdictBadge } from "@/components/ui/verdict-badge";
-import { dashboardRoute } from "@/lib/dashboard-routing";
-import { getStorageHealth, listInvestigations as listLegacyInvestigations } from "@/lib/investigation-repository";
-import { ApiRequestError, listInvestigations as listBackendInvestigations } from "@/lib/api/investigation-client";
+import { backendContinuationRoute } from "@/lib/api/backend-investigation-adapter";
+import { ApiRequestError, listInvestigations } from "@/lib/api/investigation-client";
 import { investigationSummaryToUi } from "@/lib/api/backend-investigation-adapter";
 import { CommitBadge } from "@/components/ui/commit-badge";
 import { formatDate, formatDuration } from "@/lib/utils";
@@ -20,13 +17,14 @@ import {
   CircleDot,
 } from "lucide-react";
 import type { Investigation, InvestigationStatus, Verdict } from "@/lib/types";
+import type { BackendLifecycleStatus } from "@/lib/contracts/investigation-api";
 
 const STATUS_CONFIG: Record<
   InvestigationStatus,
   { label: string; color: string; dot: string }
 > = {
   draft: { label: "Draft", color: "text-[#86ADC2]", dot: "bg-[#86ADC2]" },
-  extracting_claims: { label: "Extracting claims", color: "text-[#FF6B1A]", dot: "bg-[#FF6B1A] animate-pulse" },
+  extracting_claims: { label: "Draft", color: "text-[#86ADC2]", dot: "bg-[#86ADC2]" },
   awaiting_claim_review: { label: "Awaiting review", color: "text-[#FFC94D]", dot: "bg-[#FFC94D]" },
   investigating: { label: "Investigating", color: "text-[#FF6B1A]", dot: "bg-[#FF6B1A] animate-pulse" },
   challenged: { label: "Challenged", color: "text-[#FF8540]", dot: "bg-[#FF8540]" },
@@ -38,15 +36,6 @@ const STATUS_CONFIG: Record<
   awaiting_review: { label: "Awaiting review", color: "text-[#FFC94D]", dot: "bg-[#FFC94D]" },
 };
 
-const SUBMISSION_LABELS: Record<string, string> = {
-  hackathon_submission: "Hackathon",
-  grant_application: "Grant",
-  milestone_report: "Milestone",
-  technical_due_diligence: "Due diligence",
-  repository_documentation: "Documentation",
-  other: "Other",
-};
-
 const VERDICT_COLORS: Record<Verdict, string> = {
   verified: "bg-[#4FBF9A]",
   partially_verified: "bg-[#FFC94D]",
@@ -54,6 +43,28 @@ const VERDICT_COLORS: Record<Verdict, string> = {
   contradicted: "bg-[#FF8540]",
   inconclusive: "bg-[#86ADC2]",
 };
+
+function mapUiStatusToBackend(status: InvestigationStatus): BackendLifecycleStatus {
+  switch (status) {
+    case "investigating":
+      return "investigating";
+    case "challenged":
+      return "challenging";
+    case "reinvestigating":
+      return "reinvestigating";
+    default:
+      return status as BackendLifecycleStatus;
+  }
+}
+
+function investigationRoute(inv: Investigation): string | null {
+  if (inv.status === "failed") return null;
+  return backendContinuationRoute(
+    inv.id,
+    mapUiStatusToBackend(inv.status),
+    Boolean(inv.report),
+  );
+}
 
 function VerdictBar({ claims }: { claims: Investigation["claims"] }) {
   if (!claims.length) return null;
@@ -79,45 +90,32 @@ function VerdictBar({ claims }: { claims: Investigation["claims"] }) {
   );
 }
 
-export function InvestigationRow({
-  inv,
-  demo = false,
-  prototype = false,
-}: {
-  inv: Investigation;
-  demo?: boolean;
-  prototype?: boolean;
-}) {
+export function InvestigationRow({ inv }: { inv: Investigation }) {
   const status = STATUS_CONFIG[inv.status];
-  const submissionLabel = SUBMISSION_LABELS[inv.submission.type];
   const isCompleted = inv.status === "completed" || inv.status === "completed_with_limitations";
   const isFailed = inv.status === "failed";
   const isAwaitingReview = inv.status === "awaiting_claim_review";
-  const route = dashboardRoute(inv, demo);
-  const actionLabel = isCompleted ? "Report" : isAwaitingReview ? "Review claims" : "View live";
+  const route = investigationRoute(inv);
+  const actionLabel = isCompleted ? "Report" : isAwaitingReview ? "Review claim" : "View live";
 
   return (
     <div className="group border-b border-[#1E4560] last:border-b-0">
       <div className="flex items-center gap-4 px-5 py-4">
-        {/* Status dot */}
         <span
           className={`h-2 w-2 shrink-0 rounded-full ${status.dot}`}
           aria-hidden
         />
 
-        {/* Main info */}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            {demo && <span className="rounded border border-[#1E4560] px-1.5 py-0.5 font-mono text-[9px] text-[#4F7590]">Demo</span>}
-            {prototype && <span className="rounded border border-[#1E4560] px-1.5 py-0.5 font-mono text-[9px] text-[#4F7590]">Local prototype</span>}
             <span className="font-mono text-sm font-medium text-[#E9F3F8]">
               {inv.project.owner}/{inv.project.repo}
             </span>
-            <span className="font-mono text-xs text-[#4F7590]">{submissionLabel}</span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-3">
-            <span className="font-mono text-[10px] text-[#4F7590]">{inv.claims.filter((claim) => claim.selected).length} selected</span>
-            {inv.simulationState && <span className="font-mono text-[10px] text-[#4F7590]">{Math.round((inv.simulationState.stepIndex / 6) * 100)}% progress</span>}
+            <span className="max-w-md truncate font-mono text-[10px] text-[#4F7590]">
+              {inv.submission.content}
+            </span>
             <CommitBadge sha={inv.repositorySnapshot.commitSha} />
             <span className="flex items-center gap-1 font-mono text-[10px] text-[#4F7590]">
               <GitBranch className="h-3 w-3" aria-hidden />
@@ -137,7 +135,6 @@ export function InvestigationRow({
           </div>
         </div>
 
-        {/* Verdict bar */}
         <div className="hidden items-center gap-2 md:flex">
           <VerdictBar claims={inv.claims} />
           {inv.requiresHumanReview && (
@@ -145,7 +142,6 @@ export function InvestigationRow({
           )}
         </div>
 
-        {/* Status */}
         <span className={`hidden shrink-0 font-mono text-xs sm:block ${status.color}`}>
           {status.label}
         </span>
@@ -156,7 +152,9 @@ export function InvestigationRow({
               {actionLabel}<ChevronRight className="h-3 w-3" aria-hidden />
             </Link>
           ) : (
-            <span className="rounded border border-[#1E4560] px-2 py-1 font-mono text-[10px] text-[#4F7590]">{demo ? "Demo only" : isFailed ? "No automatic retry" : "Unavailable"}</span>
+            <span className="rounded border border-[#1E4560] px-2 py-1 font-mono text-[10px] text-[#4F7590]">
+              {isFailed ? "No automatic retry" : "Unavailable"}
+            </span>
           )}
         </div>
       </div>
@@ -165,59 +163,52 @@ export function InvestigationRow({
 }
 
 export default function InvestigationsPage() {
-  const [persisted, setPersisted] = useState<Investigation[]>([]);
+  const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [loading, setLoading] = useState(true);
-  const [storageMessage, setStorageMessage] = useState("");
   const [apiMessage, setApiMessage] = useState("");
-  const [legacyIds, setLegacyIds] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const legacy = listLegacyInvestigations();
-      const legacyIdSet = new Set(legacy.map((investigation) => investigation.id));
-      let backend: Investigation[] = [];
       try {
-        const result = await listBackendInvestigations();
-        backend = result.investigations.map(investigationSummaryToUi);
+        const result = await listInvestigations();
+        if (cancelled) return;
+        setInvestigations(result.investigations.map(investigationSummaryToUi));
       } catch (error) {
         if (!cancelled) {
-          setApiMessage(error instanceof ApiRequestError ? error.message : "Unable to load backend investigations.");
+          setApiMessage(error instanceof ApiRequestError ? error.message : "Unable to load investigations.");
         }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      if (cancelled) return;
-      setLegacyIds(legacyIdSet);
-      setPersisted([...backend, ...legacy]);
-      const currentHealth = getStorageHealth();
-      setStorageMessage(currentHealth.status === "available" ? "" : currentHealth.message);
-      setLoading(false);
     })();
     return () => { cancelled = true; };
   }, []);
-  const persistedIds = new Set(persisted.map((investigation) => investigation.id));
-  const demoInvestigations: Investigation[] = DASHBOARD_INVESTIGATIONS.filter((investigation) => !persistedIds.has(investigation.id));
-  const investigations = [...persisted, ...demoInvestigations];
-  const metricInvestigations = persisted.filter((investigation) => !legacyIds.has(investigation.id));
-  const totalClaims = metricInvestigations.reduce((total, investigation) => total + investigation.claims.length, 0);
-  const criticalUnsupported = metricInvestigations.reduce(
-    (total, investigation) => total + investigation.claims.filter((claim) => claim.criticality === "critical" && (claim.verdict === "unverified" || claim.verdict === "contradicted")).length,
-    0
-  );
-  const requiresReview = metricInvestigations.filter((investigation) => investigation.requiresHumanReview).length;
+
+  const completed = investigations.filter(
+    (inv) => inv.status === "completed" || inv.status === "completed_with_limitations",
+  ).length;
+  const inProgress = investigations.filter(
+    (inv) => !["completed", "completed_with_limitations", "failed", "awaiting_claim_review"].includes(inv.status),
+  ).length;
 
   return (
     <AppShell title="Investigations">
       <div className="p-6">
-        {storageMessage && <p className="mb-4 rounded border border-[#FFC94D]/30 bg-[#3A2A0E] px-3 py-2 font-mono text-xs text-[#FFC94D]" role="status">{storageMessage}</p>}
-        {apiMessage && <p className="mb-4 rounded border border-[#FFC94D]/30 bg-[#3A2A0E] px-3 py-2 font-mono text-xs text-[#FFC94D]" role="status">{apiMessage}</p>}
-        {loading && <p className="mb-4 font-mono text-xs text-[#86ADC2]">Loading persisted investigations...</p>}
-        {/* Header */}
+        {apiMessage && (
+          <p className="mb-4 rounded border border-[#FFC94D]/30 bg-[#3A2A0E] px-3 py-2 font-mono text-xs text-[#FFC94D]" role="status">
+            {apiMessage}
+          </p>
+        )}
+        {loading && <p className="mb-4 font-mono text-xs text-[#86ADC2]">Loading investigations…</p>}
+
         <div className="mb-6 flex items-center justify-between gap-4">
           <div>
             <h1 className="text-lg font-semibold text-[#E9F3F8]">
               Investigations
             </h1>
             <p className="mt-0.5 text-sm text-[#86ADC2]">
-              {persisted.length} saved investigations · {demoInvestigations.length} demos
+              {investigations.length} saved {investigations.length === 1 ? "investigation" : "investigations"}
             </p>
           </div>
           <Link
@@ -229,29 +220,11 @@ export default function InvestigationsPage() {
           </Link>
         </div>
 
-        {/* Summary metrics */}
-        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
           {[
-            {
-              label: "Total investigations",
-              value: metricInvestigations.length,
-              color: "text-[#E9F3F8]",
-            },
-            {
-              label: "Claims investigated",
-              value: totalClaims,
-              color: "text-[#E9F3F8]",
-            },
-            {
-              label: "Critical unsupported",
-              value: criticalUnsupported,
-              color: criticalUnsupported > 0 ? "text-[#F2796B]" : "text-[#4FBF9A]",
-            },
-            {
-              label: "Requiring review",
-              value: requiresReview,
-              color: requiresReview > 0 ? "text-[#FFC94D]" : "text-[#4FBF9A]",
-            },
+            { label: "Total", value: investigations.length, color: "text-[#E9F3F8]" },
+            { label: "In progress", value: inProgress, color: inProgress > 0 ? "text-[#FF6B1A]" : "text-[#4FBF9A]" },
+            { label: "Completed", value: completed, color: "text-[#4FBF9A]" },
           ].map((metric) => (
             <div
               key={metric.label}
@@ -265,14 +238,12 @@ export default function InvestigationsPage() {
           ))}
         </div>
 
-        {/* Investigation list */}
         <div className="rounded-lg border border-[#1E4560] bg-[#123049]">
-          {/* Table header */}
           <div className="border-b border-[#1E4560] px-5 py-3">
             <div className="flex items-center gap-4">
               <CircleDot className="h-4 w-4 text-[#4F7590]" aria-hidden />
               <span className="font-mono text-xs text-[#4F7590]">
-                Repository · Branch · Commit · Status
+                Repository · Claim · Status
               </span>
               <span className="ml-auto font-mono text-xs text-[#4F7590]">
                 Actions
@@ -280,15 +251,21 @@ export default function InvestigationsPage() {
             </div>
           </div>
 
-          {/* Rows */}
-          {investigations.map((inv) => (
-            <InvestigationRow
-              key={inv.id}
-              inv={inv}
-              demo={!persistedIds.has(inv.id)}
-              prototype={legacyIds.has(inv.id)}
-            />
-          ))}
+          {investigations.length === 0 && !loading ? (
+            <div className="px-5 py-10 text-center">
+              <p className="text-sm text-[#86ADC2]">No investigations yet.</p>
+              <Link
+                href="/investigations/new"
+                className="mt-3 inline-flex text-sm text-[#FF6B1A] hover:underline"
+              >
+                Start your first investigation
+              </Link>
+            </div>
+          ) : (
+            investigations.map((inv) => (
+              <InvestigationRow key={inv.id} inv={inv} />
+            ))
+          )}
         </div>
       </div>
     </AppShell>

@@ -1,6 +1,5 @@
 import {
   InvestigationEventsResponseSchema,
-  InvestigationIdSchema,
   InvestigationListResponseSchema,
   InvestigationReportResponseSchema,
   InvestigationResponseSchema,
@@ -46,10 +45,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiRequestError(response.status, envelope);
   }
   return body as T;
-}
-
-export function isBackendInvestigationId(id: string): boolean {
-  return InvestigationIdSchema.safeParse(id).success;
 }
 
 export async function listInvestigations() {
