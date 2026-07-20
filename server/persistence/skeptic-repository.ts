@@ -25,12 +25,18 @@ export type PersistedSkepticAnalysis = Readonly<{
 type Db = Kysely<Database> | Transaction<Database>;
 
 export async function loadPersistedSkepticAnalysis(db: Db, investigationId: string, cycle?: number): Promise<PersistedSkepticAnalysis | null> {
+  // Reinvestigation bumps investigations.reinvestigation_cycle_count before a new skeptic
+  // pass exists. Default load must therefore accept the latest analysis at or below the
+  // current cycle so judging after supplemental evidence does not fail with conflict.
   let query = db.selectFrom("skeptic_analyses").selectAll().where("investigation_id", "=", investigationId);
-  if (cycle !== undefined) query = query.where("reinvestigation_cycle", "=", cycle);
-  else {
-    const investigation = await db.selectFrom("investigations").select("reinvestigation_cycle_count").where("id", "=", investigationId).executeTakeFirst();
+  if (cycle !== undefined) {
+    query = query.where("reinvestigation_cycle", "=", cycle);
+  } else {
+    const investigation = await db.selectFrom("investigations").select("reinvestigation_cycle_count")
+      .where("id", "=", investigationId).executeTakeFirst();
     if (!investigation) return null;
-    query = query.where("reinvestigation_cycle", "=", investigation.reinvestigation_cycle_count);
+    query = query.where("reinvestigation_cycle", "<=", investigation.reinvestigation_cycle_count)
+      .orderBy("reinvestigation_cycle", "desc");
   }
   const row = await query.executeTakeFirst();
   if (!row) return null;
@@ -132,11 +138,11 @@ export class SkepticRepository {
     const parsed = validateSkepticArtifact(artifact);
     try {
       return await this.db.transaction().execute(async (tx) => {
-        const existing = await loadPersistedSkepticAnalysis(tx, investigationId);
-        if (existing) return existing;
         const investigation = await tx.selectFrom("investigations").select(["id", "reinvestigation_cycle_count"])
           .where("id", "=", investigationId).forUpdate().executeTakeFirst();
         if (!investigation) throw new ApplicationError("not_found", {});
+        const existing = await loadPersistedSkepticAnalysis(tx, investigationId, investigation.reinvestigation_cycle_count);
+        if (existing) return existing;
         const plan = await loadPersistedPlan(tx, investigationId);
         if (!plan) throw new ApplicationError("conflict", {});
         const snapshot = await loadPersistedSnapshot(tx, investigationId);

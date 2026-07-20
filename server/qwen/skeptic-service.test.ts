@@ -81,19 +81,79 @@ describe("investigation skeptic service", () => {
         investigationId, reinvestigationCycle: 0,
         claim: { id: claimId, statement: "README exists.", preservedQualifiers: [] },
         obligations: [{ key: "obl_readme", description: "README exists." }],
-        snapshot, evidenceSummary: { tasks: [] },
+        snapshot: { ...snapshot, manifestHashSha256: "not-a-hash" },
+        evidenceSummary: { tasks: [] },
       })),
       createForInvestigation: vi.fn(),
     };
     const client = {
       createChatCompletion: vi.fn(async () => ({
-        choices: [{ message: { content: JSON.stringify({ challenges: [null] }) } }],
+        choices: [{ message: { content: JSON.stringify({ challenges: [] }) } }],
       })),
     };
     await expect(new InvestigationSkepticService(skeptic as never, client as never, {
       apiKey: "k", apiOrigin: "https://dashscope.aliyuncs.com", modelId: "qwen-plus", promptVersion: "planning-v1",
       requestTimeoutMs: 1000, planningDeadlineMs: 2000, maxOutputTokens: 1000, maxContextBytes: 100000, maxResponseBytes: 100000,
     }).analyze(investigationId)).rejects.toMatchObject({ failureCode: "skeptic_schema_invalid" });
+  });
+
+  it("strips ungrounded evidence refs before persistence", async () => {
+    const skeptic = {
+      findByInvestigation: vi.fn(async () => null),
+      loadSkepticContext: vi.fn(async () => ({
+        investigationId, reinvestigationCycle: 0,
+        claim: { id: claimId, statement: "README exists.", preservedQualifiers: [] },
+        obligations: [{ key: "obl_readme", description: "README exists." }],
+        snapshot,
+        evidenceSummary: {
+          tasks: [{
+            taskKey: "task_readme",
+            specialistCapability: "repository_investigator",
+            candidates: [{
+              candidateKey: "cand_readme",
+              excerpts: [{ path: "README.md", lineStart: 1, lineEnd: 1, excerptText: "#" }],
+            }],
+          }],
+        },
+      })),
+      createForInvestigation: vi.fn(async (_id: string, artifact: typeof fixture) => ({
+        id: "analysis", investigationId, artifact,
+      })),
+    };
+    const dirty = {
+      ...fixture,
+      challenges: [{
+        ...fixture.challenges[0],
+        evidenceRefs: [
+          ...fixture.challenges[0].evidenceRefs,
+          { candidateKey: "cand_fake", path: "nope.ts", lineStart: 1, lineEnd: 1, obligationKeys: [] },
+        ],
+        relatedCandidateKeys: ["cand_readme", "cand_fake"],
+      }],
+      outcome: "reinvestigation_required",
+      reinvestigationTaskKeys: ["missing_task"],
+    };
+    const client = {
+      createChatCompletion: vi.fn(async () => ({
+        choices: [{ message: { content: JSON.stringify(dirty) } }],
+      })),
+    };
+    await new InvestigationSkepticService(skeptic as never, client as never, {
+      apiKey: "k", apiOrigin: "https://dashscope.aliyuncs.com", modelId: "qwen-plus", promptVersion: "planning-v1",
+      requestTimeoutMs: 1000, planningDeadlineMs: 2000, maxOutputTokens: 1000, maxContextBytes: 100000, maxResponseBytes: 100000,
+    }).analyze(investigationId);
+    expect(skeptic.createForInvestigation).toHaveBeenCalledWith(
+      investigationId,
+      expect.objectContaining({
+        outcome: "cleared_for_judgment",
+        reinvestigationTaskKeys: [],
+        challenges: [expect.objectContaining({
+          relatedCandidateKeys: ["cand_readme"],
+          evidenceRefs: [expect.objectContaining({ candidateKey: "cand_readme" })],
+        })],
+      }),
+      expect.any(Object),
+    );
   });
 
   it("maps persistence provenance failures to skeptic_schema_invalid", async () => {
