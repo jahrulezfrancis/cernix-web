@@ -48,12 +48,68 @@ describe("skeptic normalizer", () => {
     expect(artifact.reinvestigationTaskKeys).toEqual(["task_scan"]);
   });
 
-  it("fails when challenge content cannot be normalized into valid text", () => {
-    expect(() => buildSkepticArtifactFromProviderResponse({
-      parsed: { challenges: [null] },
+  it("drops invalid reinvestigation task keys instead of inventing fallbacks", () => {
+    const artifact = buildSkepticArtifactFromProviderResponse({
+      parsed: {
+        claimAnalyses: [{ claimId: "uuid", provisionalVerdictHint: "insufficient" }],
+        challenges: [],
+        outcome: "reinvestigation_required",
+        reinvestigationTaskKeys: ["Invalid Key!", "also bad"],
+      },
       investigationId,
       claimId,
       snapshotManifestHash: "a".repeat(64),
+      commitSha: "b".repeat(40),
+    });
+    expect(artifact.outcome).toBe("cleared_for_judgment");
+    expect(artifact.reinvestigationTaskKeys).toEqual([]);
+  });
+
+  it("truncates overlong challenge text to schema limits", () => {
+    const artifact = buildSkepticArtifactFromProviderResponse({
+      parsed: {
+        challenges: [{
+          id: "chal_long",
+          challengeType: "other",
+          severity: "minor",
+          summary: "s".repeat(600),
+          reasoning: "r".repeat(5000),
+        }],
+        outcome: "cleared_for_judgment",
+      },
+      investigationId,
+      claimId,
+      snapshotManifestHash: "a".repeat(64),
+      commitSha: "b".repeat(40),
+    });
+    expect(artifact.challenges[0]?.summary).toHaveLength(500);
+    expect(artifact.challenges[0]?.reasoning).toHaveLength(4000);
+  });
+
+  it("skips null challenge entries rather than failing the whole artifact", () => {
+    const artifact = buildSkepticArtifactFromProviderResponse({
+      parsed: { challenges: [null, {
+        id: "chal_ok",
+        challengeType: "other",
+        severity: "minor",
+        summary: "Ok",
+        reasoning: "Valid challenge.",
+      }] },
+      investigationId,
+      claimId,
+      snapshotManifestHash: "a".repeat(64),
+      commitSha: "b".repeat(40),
+    });
+    expect(artifact.challenges).toHaveLength(1);
+    expect(artifact.challenges[0]?.id).toBe("chal_ok");
+  });
+
+  it("fails when snapshot identity cannot produce a schema-valid artifact", () => {
+    expect(() => buildSkepticArtifactFromProviderResponse({
+      parsed: { challenges: [] },
+      investigationId,
+      claimId,
+      snapshotManifestHash: "not-a-hash",
       commitSha: "b".repeat(40),
     })).toThrow(PlanningError);
   });

@@ -1,5 +1,9 @@
 import type { SkepticRepository, PersistedSkepticAnalysis } from "@/server/persistence/skeptic-repository";
 import { ApplicationError } from "@/server/errors";
+import {
+  buildProvenanceFromEvidenceSummary,
+  sanitizeSkepticArtifactForProvenance,
+} from "@/server/skeptic/challenge-provenance";
 import type { QwenClient } from "./client";
 import type { QwenPlanningConfig } from "./config";
 import { PlanningError } from "./errors";
@@ -58,6 +62,8 @@ export class InvestigationSkepticService {
         snapshotManifestHash: context.snapshot.manifestHashSha256,
         commitSha: context.snapshot.commitSha,
       });
+      const provenance = buildProvenanceFromEvidenceSummary(context.evidenceSummary);
+      artifact = sanitizeSkepticArtifactForProvenance(artifact, provenance.index, provenance.taskRuns);
     } catch (error) {
       if (error instanceof PlanningError) throw error;
       throw new PlanningError("skeptic_schema_invalid", error);

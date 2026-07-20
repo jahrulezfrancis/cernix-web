@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ApplicationError } from "@/server/errors";
-import { buildEvidenceIndex, validateChallengeEvidenceRefs, validateReinvestigationTaskKeys } from "./challenge-provenance";
+import {
+  buildEvidenceIndex,
+  buildProvenanceFromEvidenceSummary,
+  sanitizeSkepticArtifactForProvenance,
+  validateChallengeEvidenceRefs,
+  validateReinvestigationTaskKeys,
+} from "./challenge-provenance";
 import type { SkepticArtifact } from "@/lib/contracts/skeptic-challenge";
 import { SKEPTIC_SCHEMA_VERSION } from "@/lib/contracts/skeptic-challenge";
 
@@ -31,6 +37,52 @@ describe("challenge provenance", () => {
       ...artifact,
       challenges: [{ ...artifact.challenges[0], evidenceRefs: [{ candidateKey: "missing", obligationKeys: [] }] }],
     }, index)).toThrow(ApplicationError);
+  });
+
+  it("sanitizes invented refs and downgrades ungrounded reinvestigation", () => {
+    const dirty: SkepticArtifact = {
+      ...artifact,
+      challenges: [{
+        ...artifact.challenges[0],
+        evidenceRefs: [
+          { candidateKey: "cand_readme", path: "README.md", lineStart: 1, lineEnd: 1, obligationKeys: [] },
+          { candidateKey: "cand_invented", path: "nope.ts", lineStart: 1, lineEnd: 2, obligationKeys: [] },
+          { candidateKey: "cand_readme", path: "README.md", lineStart: 99, lineEnd: 99, obligationKeys: [] },
+        ],
+        relatedCandidateKeys: ["cand_readme", "cand_invented"],
+      }],
+      outcome: "reinvestigation_required",
+      reinvestigationTaskKeys: ["missing_task", "task_readme"],
+    };
+    const cleaned = sanitizeSkepticArtifactForProvenance(dirty, index, [
+      { task_key: "task_readme", specialist_capability: "repository_investigator" },
+    ]);
+    expect(cleaned.challenges[0]?.evidenceRefs).toEqual([
+      { candidateKey: "cand_readme", path: "README.md", lineStart: 1, lineEnd: 1, obligationKeys: [] },
+      { candidateKey: "cand_readme", obligationKeys: [] },
+    ]);
+    expect(cleaned.challenges[0]?.relatedCandidateKeys).toEqual(["cand_readme"]);
+    expect(cleaned.outcome).toBe("reinvestigation_required");
+    expect(cleaned.reinvestigationTaskKeys).toEqual(["task_readme"]);
+    expect(() => validateChallengeEvidenceRefs(cleaned, index)).not.toThrow();
+    expect(() => validateReinvestigationTaskKeys(cleaned, [
+      { task_key: "task_readme", specialist_capability: "repository_investigator" },
+    ])).not.toThrow();
+  });
+
+  it("builds provenance indexes from skeptic evidence summaries", () => {
+    const { index: fromSummary, taskRuns } = buildProvenanceFromEvidenceSummary({
+      tasks: [{
+        taskKey: "task_readme",
+        specialistCapability: "repository_investigator",
+        candidates: [{
+          candidateKey: "cand_readme",
+          excerpts: [{ path: "README.md", lineStart: 1, lineEnd: 1, excerptText: "#" }],
+        }],
+      }],
+    });
+    expect(fromSummary.candidateKeys.has("cand_readme")).toBe(true);
+    expect(taskRuns).toEqual([{ task_key: "task_readme", specialist_capability: "repository_investigator" }]);
   });
 });
 
