@@ -1,0 +1,33 @@
+# Production Caddy edge for Cernix.
+# Automatic HTTPS for {$CERNIX_SITE_ADDRESS} via publicly trusted ACME (Let's Encrypt).
+# Certificate material persists in Compose volume cernix_caddy_data (/data).
+# HTTP (:80) redirects to HTTPS (:443) automatically.
+#
+# Internal-only health listener (not published on the host):
+#   http://127.0.0.1:9080/caddy-health
+
+http://:9080 {
+	respond /caddy-health "ok\n" 200
+}
+
+{$CERNIX_SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options SAMEORIGIN
+		-Server
+	}
+
+	request_body {
+		max_size 512KB
+	}
+
+	reverse_proxy web:3000 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

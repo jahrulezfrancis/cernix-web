@@ -1,0 +1,49 @@
+flowchart LR
+  subgraph Public["Public path"]
+    Judge["Judge browser"]
+    SG["Alibaba ECS security group<br/>inbound 80 + 443"]
+    Caddy["Caddy container<br/>auto HTTPS + HTTP→HTTPS"]
+  end
+
+  subgraph EdgeNet["Docker network: edge"]
+    Caddy
+    Web["Next.js web :3000<br/>standalone / non-root"]
+  end
+
+  subgraph BackendNet["Docker network: backend — private"]
+    Web
+    PG[("PostgreSQL 17<br/>:5432 not published")]
+    Migrate["migrate one-shot"]
+    WS["worker-snapshot"]
+    WP["worker-planning"]
+    WE["worker-evidence"]
+    WSk["worker-skeptic"]
+    WJ["worker-judge"]
+    Certs[("cernix_caddy_data<br/>ACME cert persistence")]
+  end
+
+  subgraph External["External APIs"]
+    GH["GitHub API<br/>exact-commit snapshot"]
+    Qwen["Qwen Cloud / DashScope<br/>intl allowlisted origin"]
+    LE["Let's Encrypt ACME"]
+  end
+
+  Judge --> SG --> Caddy --> Web
+  Caddy --> Certs
+  Caddy -.-> LE
+  Web --> PG
+  Migrate --> PG
+  WS --> PG
+  WP --> PG
+  WE --> PG
+  WSk --> PG
+  WJ --> PG
+  WS --> GH
+  WP --> Qwen
+  WE --> Qwen
+  WSk --> Qwen
+  WJ --> Qwen
+
+  SnapshotBoundary["Immutable snapshot boundary<br/>admitted files + commit SHA"]
+  WS -.-> SnapshotBoundary
+  SnapshotBoundary -.-> WP

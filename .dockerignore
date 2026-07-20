@@ -1,0 +1,66 @@
+# Git and CI
+.git
+.github
+.gitattributes
+
+# Dependencies and build outputs
+node_modules
+.next
+out
+coverage
+dist
+*.tsbuildinfo
+
+# Logs and temp
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tmp
+temp
+.turbo
+
+# Environment and secrets — never enter build context
+.env
+.env.*
+!.env.example
+!.env.production.example
+.env*.local
+*.pem
+*.key
+id_rsa*
+credentials*.json
+
+# Local database / Docker leftovers
+*.sqlite
+*.sqlite3
+docker-compose.override.yml
+
+# Editor / OS
+.DS_Store
+.idea
+.vscode
+*.swp
+*~
+
+# Tests and local-only artifacts (not required for Next standalone / workers)
+**/*.test.ts
+**/*.test.tsx
+**/*.integration.test.ts
+**/*.live-smoke.test.ts
+vitest*.config.ts
+agent-transcripts
+.cursor
+
+# Deploy proofs that are not needed inside the image
+deploy/alibaba/backups
+*.dump
+*.sql.gz
+
+# Context packs (not required at runtime)
+cernix-context
+
+# Documentation not needed for build
+README.md
+docs
