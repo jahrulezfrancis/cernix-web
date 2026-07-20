@@ -46,14 +46,24 @@ Nginx is the only Internet-facing process. Next.js and PostgreSQL listen on the 
 
 ## Memory constraint
 
-Build images **sequentially** on the ECS host (`deploy.sh` does this). Each Node process sets a bounded `--max-old-space-size`. PostgreSQL uses small `shared_buffers` and `max_connections=40`. Observe with:
+Target host: **2 GiB RAM + 2 GiB swap**. Leave ~500 MiB for Ubuntu/Docker.
+
+Steady-state Compose `mem_limit` budget (excluding one-shot `migrate`):
+
+| Service | mem_limit | Node heap (`NODE_OPTIONS`) |
+| --- | ---: | ---: |
+| postgres | 256 MiB | — |
+| web | 384 MiB | 256 MiB |
+| worker ×5 | 160 MiB each (800 MiB) | 128 MiB each |
+| nginx | 48 MiB | — |
+| **Total caps** | **1488 MiB** | |
+
+`migrate` uses 192 MiB only while running. Images are built **sequentially**; `up` always uses `--no-build` so Compose cannot spawn concurrent missing-image builds. Shared worker tag: `cernix-worker:prod` (migrate + all five workers).
 
 ```bash
 docker stats --no-stream
 free -h
 ```
-
-Tune `mem_limit` / `NODE_OPTIONS` in `compose.production.yml` if workers OOM during large Qwen responses or snapshot verification.
 
 ## Clone and environment setup
 
@@ -96,7 +106,7 @@ In production, session and OAuth cookies include the `Secure` attribute (`server
 2. **GitHub sign-in will not work reliably until a domain and HTTPS terminate TLS in front of Nginx.**
 3. Do not disable `Secure` cookies globally to make the IP demo “work.”
 
-When a domain is ready: point DNS at the ECS IP, obtain a certificate, publish 443, set `AUTH_URL=https://your.domain`, and update the GitHub OAuth callback to HTTPS.
+When a domain is ready (example `cernix.example.com`): terminate TLS at a load balancer or add Nginx 443 later, set `AUTH_URL=https://cernix.example.com`, and register callback `https://cernix.example.com/api/auth/github/callback`. Do not weaken Secure cookies.
 
 ## Qwen Cloud
 
@@ -118,13 +128,16 @@ chmod +x deploy/alibaba/*.sh
 ./deploy/alibaba/verify.sh
 ```
 
-Manual equivalents:
+Manual equivalents (sequential builds, then start without building):
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yml build web
-docker compose --env-file .env.production -f compose.production.yml build worker
-docker compose --env-file .env.production -f compose.production.yml up -d
+# Builds shared image tag cernix-worker:prod once (migrate declares the build).
+docker compose --env-file .env.production -f compose.production.yml build migrate
+docker compose --env-file .env.production -f compose.production.yml up -d --no-build
 ```
+
+Do **not** invoke a Compose service named `worker` — that service does not exist. Worker containers reuse `cernix-worker:prod`.
 
 ### Migration verification
 
@@ -172,7 +185,7 @@ Never commit backups into the repository.
 
 ## Reboot behavior
 
-Compose services use `restart: unless-stopped`. After ECS reboot, Docker starts them again once the daemon is up. Confirm with `./deploy/alibaba/verify.sh`.
+Postgres and Nginx use `restart: unless-stopped`. Web and workers use `restart: on-failure:5` to avoid unbounded restart storms on bad configuration. After ECS reboot, confirm with `./deploy/alibaba/verify.sh`.
 
 ## Proof links for Devpost
 

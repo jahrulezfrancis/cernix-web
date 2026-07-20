@@ -82,6 +82,7 @@ jobs:
 
       - name: Shell syntax for deploy scripts
         run: |
+          bash -n deploy/alibaba/common.sh
           bash -n deploy/alibaba/deploy.sh
           bash -n deploy/alibaba/update.sh
           bash -n deploy/alibaba/verify.sh
@@ -135,7 +136,11 @@ jobs:
           printf '%s\n' "$rendered" | grep -q 'worker-evidence'
           printf '%s\n' "$rendered" | grep -q 'worker-skeptic'
           printf '%s\n' "$rendered" | grep -q 'worker-judge'
-          printf '%s\n' "$rendered" | grep -q 'service_completed_successfully'
+          printf '%s\n' "$rendered" | grep -q 'cernix-worker:prod'
+          printf '%s\n' "$rendered" | grep -q 'cernix-web:prod'
+          printf '%s\n' "$rendered" | grep -q 'on-failure'
+          worker_images="$(printf '%s\n' "$rendered" | awk '/^  worker-/{s=$1} /image:/{if(s!=""){print s,$2; s=""}}')"
+          printf '%s\n' "$worker_images" | grep -c 'cernix-worker:prod' | grep -qx 5
           # Confirm final image users without printing env values.
           docker image inspect cernix-web:ci --format '{{.Config.User}}' | grep -qx 'cernix'
           docker image inspect cernix-worker:ci --format '{{.Config.User}}' | grep -qx 'cernix'

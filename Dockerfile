@@ -38,7 +38,7 @@ COPY --from=builder --chown=cernix:cernix /app/.next/static ./.next/static
 USER cernix
 ENV PORT=3000 \
     HOSTNAME=0.0.0.0 \
-    NODE_OPTIONS=--max-old-space-size=384
+    NODE_OPTIONS=--max-old-space-size=256
 EXPOSE 3000
 CMD ["node", "server.js"]
 
@@ -57,6 +57,6 @@ COPY --chown=cernix:cernix server ./server
 COPY --chown=cernix:cernix lib ./lib
 USER cernix
 ENV CERNIX_SKIP_LOCAL_ENV=1 \
-    NODE_OPTIONS=--max-old-space-size=256
+    NODE_OPTIONS=--max-old-space-size=128
 # No default command: Compose sets migrate or a specific worker script.
 CMD ["node", "--version"]

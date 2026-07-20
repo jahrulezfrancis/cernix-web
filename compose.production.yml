@@ -4,6 +4,11 @@
 #
 # Local development continues to use: docker compose up -d postgres
 #
+# Build web and the shared worker image sequentially, then start without builds:
+#   docker compose --env-file .env.production -f compose.production.yml build web
+#   docker compose --env-file .env.production -f compose.production.yml build migrate
+#   docker compose --env-file .env.production -f compose.production.yml up -d --no-build
+#
 # Optional override for CI / smoke validation:
 #   CERNIX_COMPOSE_ENV_FILE=.env.production.example docker compose --env-file ... -f compose.production.yml config
 
@@ -13,12 +18,13 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+# Single shared worker/migrate image. Only `migrate` declares `build:` so Compose
+# builds the worker target once; worker-* services reference the same image tag.
+x-worker-image: &worker-image cernix-worker:prod
+
 x-worker-common: &worker-common
-  build:
-    context: .
-    dockerfile: Dockerfile
-    target: worker
-  restart: unless-stopped
+  image: *worker-image
+  restart: on-failure:5
   networks:
     - backend
   env_file:
@@ -26,16 +32,16 @@ x-worker-common: &worker-common
   environment:
     NODE_ENV: production
     CERNIX_SKIP_LOCAL_ENV: "1"
-    DATABASE_POOL_MAX: "3"
-    NODE_OPTIONS: --max-old-space-size=256
+    DATABASE_POOL_MAX: "2"
+    NODE_OPTIONS: --max-old-space-size=128
     HOME: /tmp
   depends_on:
     postgres:
       condition: service_healthy
     migrate:
       condition: service_completed_successfully
-  mem_limit: 320m
-  cpus: "0.35"
+  mem_limit: 160m
+  cpus: "0.30"
   stop_grace_period: 45s
   security_opt:
     - no-new-privileges:true
@@ -61,7 +67,7 @@ services:
       - -c
       - shared_buffers=64MB
       - -c
-      - max_connections=40
+      - max_connections=30
       - -c
       - work_mem=4MB
       - -c
@@ -78,8 +84,8 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
-    mem_limit: 384m
-    cpus: "0.50"
+    mem_limit: 256m
+    cpus: "0.45"
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
@@ -87,6 +93,7 @@ services:
     # Port 5432 is intentionally NOT published.
 
   migrate:
+    image: *worker-image
     build:
       context: .
       dockerfile: Dockerfile
@@ -105,7 +112,7 @@ services:
       postgres:
         condition: service_healthy
     command: ["node_modules/.bin/tsx", "server/db/migrate-cli.ts", "up"]
-    mem_limit: 256m
+    mem_limit: 192m
     cpus: "0.25"
     security_opt:
       - no-new-privileges:true
@@ -115,11 +122,12 @@ services:
     logging: *default-logging
 
   web:
+    image: cernix-web:prod
     build:
       context: .
       dockerfile: Dockerfile
       target: web
-    restart: unless-stopped
+    restart: on-failure:5
     networks:
       - edge
       - backend
@@ -129,8 +137,8 @@ services:
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
       PORT: "3000"
-      DATABASE_POOL_MAX: "5"
-      NODE_OPTIONS: --max-old-space-size=384
+      DATABASE_POOL_MAX: "4"
+      NODE_OPTIONS: --max-old-space-size=256
     depends_on:
       postgres:
         condition: service_healthy
@@ -148,8 +156,8 @@ services:
       timeout: 5s
       retries: 12
       start_period: 40s
-    mem_limit: 512m
-    cpus: "0.60"
+    mem_limit: 384m
+    cpus: "0.55"
     stop_grace_period: 25s
     security_opt:
       - no-new-privileges:true
@@ -162,9 +170,9 @@ services:
     environment:
       NODE_ENV: production
       CERNIX_SKIP_LOCAL_ENV: "1"
-      DATABASE_POOL_MAX: "3"
+      DATABASE_POOL_MAX: "2"
       CERNIX_SNAPSHOT_WORKER_OWNER: ecs-snapshot-1
-      NODE_OPTIONS: --max-old-space-size=256
+      NODE_OPTIONS: --max-old-space-size=128
       HOME: /tmp
 
   worker-planning:
@@ -173,9 +181,9 @@ services:
     environment:
       NODE_ENV: production
       CERNIX_SKIP_LOCAL_ENV: "1"
-      DATABASE_POOL_MAX: "3"
+      DATABASE_POOL_MAX: "2"
       CERNIX_PLANNING_WORKER_OWNER: ecs-planning-1
-      NODE_OPTIONS: --max-old-space-size=256
+      NODE_OPTIONS: --max-old-space-size=128
       HOME: /tmp
 
   worker-evidence:
@@ -184,9 +192,9 @@ services:
     environment:
       NODE_ENV: production
       CERNIX_SKIP_LOCAL_ENV: "1"
-      DATABASE_POOL_MAX: "3"
+      DATABASE_POOL_MAX: "2"
       CERNIX_EVIDENCE_WORKER_OWNER: ecs-evidence-1
-      NODE_OPTIONS: --max-old-space-size=256
+      NODE_OPTIONS: --max-old-space-size=128
       HOME: /tmp
 
   worker-skeptic:
@@ -195,9 +203,9 @@ services:
     environment:
       NODE_ENV: production
       CERNIX_SKIP_LOCAL_ENV: "1"
-      DATABASE_POOL_MAX: "3"
+      DATABASE_POOL_MAX: "2"
       CERNIX_SKEPTIC_WORKER_OWNER: ecs-skeptic-1
-      NODE_OPTIONS: --max-old-space-size=256
+      NODE_OPTIONS: --max-old-space-size=128
       HOME: /tmp
 
   worker-judge:
@@ -206,9 +214,9 @@ services:
     environment:
       NODE_ENV: production
       CERNIX_SKIP_LOCAL_ENV: "1"
-      DATABASE_POOL_MAX: "3"
+      DATABASE_POOL_MAX: "2"
       CERNIX_JUDGE_WORKER_OWNER: ecs-judge-1
-      NODE_OPTIONS: --max-old-space-size=256
+      NODE_OPTIONS: --max-old-space-size=128
       HOME: /tmp
 
   nginx:
@@ -230,7 +238,7 @@ services:
       timeout: 5s
       retries: 6
       start_period: 10s
-    mem_limit: 64m
+    mem_limit: 48m
     cpus: "0.15"
     stop_grace_period: 10s
     security_opt:
