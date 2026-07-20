@@ -219,8 +219,8 @@ services:
       NODE_OPTIONS: --max-old-space-size=128
       HOME: /tmp
 
-  nginx:
-    image: nginx:1.27.5-alpine
+  caddy:
+    image: caddy:2.9.1-alpine
     restart: unless-stopped
     networks:
       - edge
@@ -228,26 +228,28 @@ services:
       web:
         condition: service_healthy
     ports:
-      # Default 80 for ECS. Local rootless Docker may need CERNIX_HTTP_PORT=8080.
+      # Production publishes 80 + 443. Smoke/rootless may remap via CERNIX_HTTP_PORT / CERNIX_HTTPS_PORT.
       - "${CERNIX_HTTP_PORT:-80}:80"
+      - "${CERNIX_HTTPS_PORT:-443}:443"
+    environment:
+      CERNIX_SITE_ADDRESS: ${CERNIX_SITE_ADDRESS}
+      CERNIX_ACME_EMAIL: ${CERNIX_ACME_EMAIL:-}
     volumes:
-      - ./deploy/alibaba/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${CERNIX_CADDYFILE:-./deploy/alibaba/Caddyfile}:/etc/caddy/Caddyfile:ro
+      - cernix_caddy_data:/data
+      - cernix_caddy_config:/config
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9080/caddy-health >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 6
-      start_period: 10s
-    mem_limit: 48m
+      start_period: 20s
+    mem_limit: 64m
     cpus: "0.15"
-    stop_grace_period: 10s
+    stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /var/cache/nginx:size=16m,mode=1777
-      - /var/run:size=8m,mode=1777
-      - /tmp:size=8m,mode=1777
+    # Caddy needs writable /data and /config for certificates; keep root FS writable.
     logging: *default-logging
 
 networks:
@@ -258,3 +260,5 @@ networks:
 
 volumes:
   cernix_prod_postgres_data:
+  cernix_caddy_data:
+  cernix_caddy_config:

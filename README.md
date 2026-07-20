@@ -6,7 +6,7 @@ The UI shows real backend progress and reports. `/sample-report` is an illustrat
 
 **Architecture:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-**Production (Alibaba ECS):** [deploy/alibaba/README.md](deploy/alibaba/README.md) — use `compose.production.yml`, never the local `docker-compose.yml`.
+**Production (Alibaba ECS):** [deploy/alibaba/README.md](deploy/alibaba/README.md) — Caddy HTTPS at `cernix.nigerianwebdeveloper.ng`; use `compose.production.yml`, never the local `docker-compose.yml`.
 
 ## Prerequisites
 

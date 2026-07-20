@@ -1,12 +1,12 @@
 flowchart LR
   subgraph Public["Public path"]
     Judge["Judge browser"]
-    SG["Alibaba ECS security group<br/>inbound 80 (443 reserved)"]
-    Nginx["Nginx container :80"]
+    SG["Alibaba ECS security group<br/>inbound 80 + 443"]
+    Caddy["Caddy container<br/>auto HTTPS + HTTP→HTTPS"]
   end
 
   subgraph EdgeNet["Docker network: edge"]
-    Nginx
+    Caddy
     Web["Next.js web :3000<br/>standalone / non-root"]
   end
 
@@ -19,14 +19,18 @@ flowchart LR
     WE["worker-evidence"]
     WSk["worker-skeptic"]
     WJ["worker-judge"]
+    Certs[("cernix_caddy_data<br/>ACME cert persistence")]
   end
 
   subgraph External["External APIs"]
     GH["GitHub API<br/>exact-commit snapshot"]
     Qwen["Qwen Cloud / DashScope<br/>intl allowlisted origin"]
+    LE["Let's Encrypt ACME"]
   end
 
-  Judge --> SG --> Nginx --> Web
+  Judge --> SG --> Caddy --> Web
+  Caddy --> Certs
+  Caddy -.-> LE
   Web --> PG
   Migrate --> PG
   WS --> PG

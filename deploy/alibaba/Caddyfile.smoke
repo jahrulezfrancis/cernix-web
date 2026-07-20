@@ -1,0 +1,40 @@
+# Local smoke Caddyfile — tls internal, no public ACME contact.
+# Used only when CERNIX_CADDY_TLS_MODE=internal and CERNIX_ALLOW_INTERNAL_TLS=1.
+# Mount via CERNIX_CADDYFILE=./deploy/alibaba/Caddyfile.smoke
+
+{
+	auto_https disable_redirects
+	local_certs
+}
+
+http://:9080 {
+	respond /caddy-health "ok\n" 200
+}
+
+http://:80 {
+	redir https://{host}{uri} permanent
+}
+
+{$CERNIX_SITE_ADDRESS} {
+	tls internal
+
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options SAMEORIGIN
+		-Server
+	}
+
+	request_body {
+		max_size 512KB
+	}
+
+	reverse_proxy web:3000 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

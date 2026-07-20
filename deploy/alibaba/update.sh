@@ -44,12 +44,13 @@ cernix_build_images_sequentially
 echo "Applying forward migrations via one-shot migrate service…"
 cernix_compose up migrate --no-build --abort-on-container-exit --exit-code-from migrate
 
-echo "Recreating application services (named volume preserved; force-recreate nginx for conf)…"
+echo "Recreating application services (DB + Caddy cert volumes preserved; force-recreate caddy for conf)…"
 cernix_compose up -d --no-build web worker-snapshot worker-planning worker-evidence worker-skeptic worker-judge
-cernix_compose up -d --no-build --force-recreate nginx
+cernix_compose up -d --no-build --force-recreate caddy
 
 echo "Update complete."
 echo "Previous commit: ${PREVIOUS_COMMIT}"
 echo "Current commit:  $(git rev-parse HEAD)"
 echo "Database dump:   ${DUMP_PATH}"
+echo "Caddy certificate volume cernix_caddy_data is preserved (no unnecessary reissuance)."
 echo "Rollback app code manually with an explicit reviewed checkout; do not auto-run down migrations."

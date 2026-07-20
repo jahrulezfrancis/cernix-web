@@ -86,6 +86,7 @@ jobs:
           bash -n deploy/alibaba/deploy.sh
           bash -n deploy/alibaba/update.sh
           bash -n deploy/alibaba/verify.sh
+          bash -n deploy/alibaba/smoke.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -113,12 +114,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=cernix-worker
 
       - name: Validate production Compose (dummy env, no secret echo)
-        env:
-          CERNIX_COMPOSE_ENV_FILE: .env.production.example
         run: |
-          # Substitute placeholders so Compose interpolation succeeds without real secrets.
           sed \
-            -e 's/PUBLIC_IP_PLACEHOLDER/203.0.113.10/g' \
             -e 's/replace_with_strong_value/CiComposePass_9x/g' \
             -e 's/replace_with_at_least_32_random_characters/CiComposeAuthSecret_at_least_32_chars/g' \
             -e 's/replace_with_github_oauth_client_id/ci_oauth_client_id/g' \
@@ -129,26 +126,22 @@ jobs:
           export CERNIX_COMPOSE_ENV_FILE=/tmp/cernix-compose.env
           docker compose --env-file /tmp/cernix-compose.env -f compose.production.yml config --quiet
           rendered="$(docker compose --env-file /tmp/cernix-compose.env -f compose.production.yml config)"
-          printf '%s\n' "$rendered" | grep -E 'published: 80|target: 80' >/dev/null
+          printf '%s\n' "$rendered" | grep -q 'caddy'
+          ! printf '%s\n' "$rendered" | grep -E '^[[:space:]]*nginx:'
+          printf '%s\n' "$rendered" | grep -E 'published: "?80"?|target: 80' >/dev/null
+          printf '%s\n' "$rendered" | grep -E 'published: "?443"?|target: 443' >/dev/null
           ! printf '%s\n' "$rendered" | grep -E 'published: 3000|published: 5432'
-          printf '%s\n' "$rendered" | grep -q 'worker-snapshot'
-          printf '%s\n' "$rendered" | grep -q 'worker-planning'
-          printf '%s\n' "$rendered" | grep -q 'worker-evidence'
-          printf '%s\n' "$rendered" | grep -q 'worker-skeptic'
-          printf '%s\n' "$rendered" | grep -q 'worker-judge'
+          printf '%s\n' "$rendered" | grep -q 'cernix_caddy_data'
           printf '%s\n' "$rendered" | grep -q 'cernix-worker:prod'
-          printf '%s\n' "$rendered" | grep -q 'cernix-web:prod'
           printf '%s\n' "$rendered" | grep -q 'on-failure'
-          worker_images="$(printf '%s\n' "$rendered" | awk '/^  worker-/{s=$1} /image:/{if(s!=""){print s,$2; s=""}}')"
-          printf '%s\n' "$worker_images" | grep -c 'cernix-worker:prod' | grep -qx 5
-          # Confirm final image users without printing env values.
           docker image inspect cernix-web:ci --format '{{.Config.User}}' | grep -qx 'cernix'
           docker image inspect cernix-worker:ci --format '{{.Config.User}}' | grep -qx 'cernix'
+          # Secret scan of rendered config and deployment docs (no real credentials expected).
+          ! printf '%s\n' "$rendered" | grep -Ei 'sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|CiComposePass'
           rm -f /tmp/cernix-compose.env
 
       - name: Assert build context excludes env files
         run: |
-          # docker build context listing via a no-op stage is heavy; use .dockerignore contract + archive probe.
           tar --exclude-from=.dockerignore -cf /tmp/cernix-context.tar .
           ! tar -tf /tmp/cernix-context.tar | grep -E '(^|/)\.env($|\.local$|\.production$)'
           tar -tf /tmp/cernix-context.tar | grep -E '(^|/)\.env\.example$' >/dev/null

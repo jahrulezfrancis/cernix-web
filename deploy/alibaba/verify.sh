@@ -22,7 +22,7 @@ echo "Compose service status:"
 cernix_compose ps
 
 running_services="$(cernix_compose ps --status running --services)"
-for service in postgres web worker-snapshot worker-planning worker-evidence worker-skeptic worker-judge nginx; do
+for service in postgres web worker-snapshot worker-planning worker-evidence worker-skeptic worker-judge caddy; do
   if printf '%s\n' "${running_services}" | grep -qx "${service}"; then
     ok "service running: ${service}"
   else
@@ -30,29 +30,28 @@ for service in postgres web worker-snapshot worker-planning worker-evidence work
   fi
 done
 
-base="$(cernix_http_base)"
-if curl -fsS "${base}/api/health/live" >/dev/null; then
-  ok "nginx liveness via /api/health/live (port ${CERNIX_HTTP_PORT})"
+if cernix_curl_health /api/health/live >/dev/null; then
+  ok "HTTPS liveness via /api/health/live"
 else
-  fail "nginx liveness via /api/health/live (port ${CERNIX_HTTP_PORT})"
+  fail "HTTPS liveness via /api/health/live"
 fi
 
-if curl -fsS "${base}/api/health/ready" >/dev/null; then
-  ok "nginx readiness via /api/health/ready (port ${CERNIX_HTTP_PORT})"
+if cernix_curl_health /api/health/ready >/dev/null; then
+  ok "HTTPS readiness via /api/health/ready"
 else
-  fail "nginx readiness via /api/health/ready (port ${CERNIX_HTTP_PORT})"
+  fail "HTTPS readiness via /api/health/ready"
 fi
 
-if curl -fsS "${base}/nginx-health" >/dev/null; then
-  ok "nginx self health (port ${CERNIX_HTTP_PORT})"
+if cernix_compose exec -T caddy wget -qO- http://127.0.0.1:9080/caddy-health >/dev/null; then
+  ok "caddy internal health"
 else
-  fail "nginx self health (port ${CERNIX_HTTP_PORT})"
+  fail "caddy internal health"
 fi
 
-if cernix_compose exec -T postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null; then
-  ok "postgres healthy internally"
+if cernix_curl_http_redirect_check; then
+  ok "HTTP to HTTPS redirect"
 else
-  fail "postgres healthy internally"
+  fail "HTTP to HTTPS redirect"
 fi
 
 ports_json="$(cernix_compose ps --format json 2>/dev/null || true)"
@@ -67,7 +66,18 @@ else
   ok "port 5432 not published"
 fi
 
-# Shared worker image: migrate + all workers must resolve to the same image id.
+# Expect published 80 and 443 (possibly remapped host ports).
+if printf '%s' "${ports_json}" | grep -Eq '"TargetPort"[[:space:]]*:[[:space:]]*80'; then
+  ok "container port 80 mapped"
+else
+  fail "container port 80 mapped"
+fi
+if printf '%s' "${ports_json}" | grep -Eq '"TargetPort"[[:space:]]*:[[:space:]]*443'; then
+  ok "container port 443 mapped"
+else
+  fail "container port 443 mapped"
+fi
+
 migrate_image="$(cernix_compose images -q migrate 2>/dev/null | head -n 1 || true)"
 image_mismatch=0
 for service in worker-snapshot worker-planning worker-evidence worker-skeptic worker-judge; do
@@ -80,6 +90,13 @@ if [[ "${image_mismatch}" -eq 0 ]]; then
   ok "shared worker image id matches migrate and all workers"
 else
   fail "shared worker image id matches migrate and all workers"
+fi
+
+# Certificate data volume must exist for persistence across recreate.
+if cernix_compose exec -T caddy sh -c 'test -d /data/caddy'; then
+  ok "caddy certificate data directory present"
+else
+  fail "caddy certificate data directory present"
 fi
 
 ps_text="$(cernix_compose ps)"

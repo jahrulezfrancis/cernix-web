@@ -2,6 +2,9 @@
 # shellcheck shell=bash
 
 CERNIX_HTTP_PORT="${CERNIX_HTTP_PORT:-80}"
+CERNIX_HTTPS_PORT="${CERNIX_HTTPS_PORT:-443}"
+CERNIX_CADDY_TLS_MODE="${CERNIX_CADDY_TLS_MODE:-auto}"
+CERNIX_ALLOW_INTERNAL_TLS="${CERNIX_ALLOW_INTERNAL_TLS:-0}"
 
 cernix_compose() {
   docker compose --env-file "${ENV_FILE}" -f compose.production.yml "$@"
@@ -61,6 +64,17 @@ cernix_refuse_placeholder_or_empty() {
   return 0
 }
 
+cernix_is_ipv4() {
+  local host="$1"
+  [[ "${host}" =~ ^[0-9]+(\.[0-9]+){3}$ ]]
+}
+
+cernix_is_hostname() {
+  local host="$1"
+  [[ "${host}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$ ]] \
+    || [[ "${host}" == "localhost" ]]
+}
+
 # Validates production .env without printing secret values.
 cernix_require_production_env() {
   local missing=0
@@ -68,7 +82,7 @@ cernix_require_production_env() {
   for key in \
     POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD DATABASE_URL \
     AUTH_SECRET AUTH_URL AUTH_GITHUB_CLIENT_ID AUTH_GITHUB_CLIENT_SECRET \
-    QWEN_API_KEY QWEN_API_ORIGIN
+    QWEN_API_KEY QWEN_API_ORIGIN CERNIX_SITE_ADDRESS
   do
     cernix_refuse_placeholder_or_empty "${key}" || missing=1
   done
@@ -100,10 +114,45 @@ cernix_require_production_env() {
     exit 1
   fi
 
-  local auth_url
+  local site
+  site="$(cernix_env_value CERNIX_SITE_ADDRESS)"
+  site="${site%/}"
+  if cernix_is_ipv4 "${site}"; then
+    echo "Refuse: CERNIX_SITE_ADDRESS must be a DNS hostname, not an IP address." >&2
+    exit 1
+  fi
+  if ! cernix_is_hostname "${site}"; then
+    echo "Refuse: CERNIX_SITE_ADDRESS is not a valid hostname." >&2
+    exit 1
+  fi
+
+  local auth_url expected
   auth_url="$(cernix_env_value AUTH_URL)"
-  if [[ ! "${auth_url}" =~ ^https?:// ]]; then
-    echo "Refuse: AUTH_URL must be an http(s) origin." >&2
+  auth_url="${auth_url%/}"
+  expected="https://${site}"
+  if [[ "${auth_url}" != https://* ]]; then
+    echo "Refuse: AUTH_URL must use https:// for production (Secure cookies)." >&2
+    exit 1
+  fi
+  if [[ "${auth_url}" =~ ^https://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    echo "Refuse: AUTH_URL must not use an IP-based origin." >&2
+    exit 1
+  fi
+  if [[ "${auth_url}" != "${expected}" ]]; then
+    echo "Refuse: AUTH_URL must exactly match https://\${CERNIX_SITE_ADDRESS} (no path or trailing slash)." >&2
+    exit 1
+  fi
+
+  local tls_mode
+  tls_mode="$(cernix_env_value CERNIX_CADDY_TLS_MODE 2>/dev/null || true)"
+  tls_mode="${tls_mode:-${CERNIX_CADDY_TLS_MODE:-auto}}"
+  if [[ "${tls_mode}" == "internal" ]]; then
+    if [[ "${CERNIX_ALLOW_INTERNAL_TLS}" != "1" ]]; then
+      echo "Refuse: CERNIX_CADDY_TLS_MODE=internal is smoke-only; set CERNIX_ALLOW_INTERNAL_TLS=1 for local smoke." >&2
+      exit 1
+    fi
+  elif [[ "${tls_mode}" != "auto" && -n "${tls_mode}" ]]; then
+    echo "Refuse: CERNIX_CADDY_TLS_MODE must be auto or internal." >&2
     exit 1
   fi
 
@@ -138,6 +187,39 @@ cernix_build_images_sequentially() {
   cernix_compose build migrate
 }
 
-cernix_http_base() {
-  printf 'http://127.0.0.1:%s' "${CERNIX_HTTP_PORT}"
+# HTTPS health base for verify/deploy probes.
+cernix_https_base() {
+  local site
+  site="$(cernix_env_value CERNIX_SITE_ADDRESS)"
+  if [[ "${CERNIX_CADDY_TLS_MODE}" == "internal" || "${CERNIX_ALLOW_INTERNAL_TLS}" == "1" ]]; then
+    # Local smoke: probe remapped HTTPS port with insecure TLS (internal CA).
+    printf 'https://127.0.0.1:%s' "${CERNIX_HTTPS_PORT}"
+  else
+    printf 'https://%s' "${site}"
+  fi
+}
+
+cernix_curl_health() {
+  local path="$1"
+  local base
+  base="$(cernix_https_base)"
+  if [[ "${CERNIX_CADDY_TLS_MODE}" == "internal" || "${CERNIX_ALLOW_INTERNAL_TLS}" == "1" ]]; then
+    local site
+    site="$(cernix_env_value CERNIX_SITE_ADDRESS)"
+    curl -fsSk --resolve "${site}:${CERNIX_HTTPS_PORT}:127.0.0.1" "https://${site}:${CERNIX_HTTPS_PORT}${path}"
+  else
+    curl -fsS "${base}${path}"
+  fi
+}
+
+cernix_curl_http_redirect_check() {
+  local site
+  site="$(cernix_env_value CERNIX_SITE_ADDRESS)"
+  local code
+  if [[ "${CERNIX_CADDY_TLS_MODE}" == "internal" || "${CERNIX_ALLOW_INTERNAL_TLS}" == "1" ]]; then
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --resolve "${site}:${CERNIX_HTTP_PORT}:127.0.0.1" "http://${site}:${CERNIX_HTTP_PORT}/api/health/live" || true)"
+  else
+    code="$(curl -sS -o /dev/null -w '%{http_code}' "http://${site}/api/health/live" || true)"
+  fi
+  [[ "${code}" == "301" || "${code}" == "302" || "${code}" == "308" ]]
 }
