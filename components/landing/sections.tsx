@@ -9,9 +9,9 @@ import {
   Users,
   ShieldAlert,
   Scale,
-  Cpu,
-  Eye,
-  Database,
+  Camera,
+  ListTree,
+  Microscope,
 } from "lucide-react";
 
 export function ProblemSection() {
@@ -36,13 +36,12 @@ export function ProblemSection() {
             <p className="mt-4 text-sm leading-relaxed text-[#86ADC2]">
               Reviewers reading project descriptions, grant applications, and
               milestone reports must take technical claims at face value.
-              Manually tracing a claim through source code, CI configuration,
-              and deployment evidence requires hours of expert time — and still
-              leaves important questions unresolved.
+              Manually tracing a claim through source code requires expert time
+              and still leaves gaps.
             </p>
             <p className="mt-3 text-sm leading-relaxed text-[#86ADC2]">
-              Cernix automates this investigation and makes the evidence
-              traceable, challengeable, and auditable.
+              Cernix automates investigation over admitted repository evidence
+              and makes conclusions traceable, challengeable, and auditable.
             </p>
           </div>
           <div className="flex flex-col justify-center gap-2">
@@ -68,23 +67,23 @@ export function WorkflowSection() {
     {
       num: "01",
       icon: GitFork,
-      title: "Submit the project",
+      title: "Submit repository + claim",
       description:
-        "Provide a public repository URL and the document you want to verify — a grant application, milestone report, or submission description.",
+        "Provide a public GitHub URL and one focus claim to verify. Add submission context so reviewers understand what is being asserted.",
     },
     {
       num: "02",
       icon: Search,
-      title: "Investigate the claims",
+      title: "Approve and investigate",
       description:
-        "Cernix extracts technical claims, assigns specialized agents to investigate them, and challenges weak findings before judgment.",
+        "Review the claim wording, approve it, and start the investigation. Five durable workers snapshot the repo and run the agent pipeline.",
     },
     {
       num: "03",
       icon: FileText,
       title: "Inspect the evidence",
       description:
-        "Every verdict is traced to specific files, commits, and code lines. No trust scores — only evidence and clear limitations.",
+        "Every verdict links to specific files and lines from an immutable snapshot. Limitations and skeptic challenges are shown explicitly.",
     },
   ];
 
@@ -95,7 +94,7 @@ export function WorkflowSection() {
           How it works
         </p>
         <h2 className="mb-10 text-balance text-2xl font-semibold text-[#E9F3F8]">
-          From submission to evidence in minutes.
+          From claim to evidence-backed report.
         </h2>
         <div className="grid gap-6 md:grid-cols-3">
           {steps.map((step) => {
@@ -138,10 +137,9 @@ export function ExampleClaimSection() {
         </h2>
 
         <div className="grid gap-4 lg:grid-cols-3">
-          {/* Original claim */}
           <div className="rounded-lg border border-[#1E4560] bg-[#123049] p-4">
             <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-[#4F7590]">
-              Original statement
+              User claim
             </p>
             <p className="text-sm italic text-[#E9F3F8]">
               &ldquo;Refund operations are idempotent per transaction and user.&rdquo;
@@ -156,10 +154,9 @@ export function ExampleClaimSection() {
             </div>
           </div>
 
-          {/* Normalized interpretation */}
           <div className="rounded-lg border border-[#1E4560] bg-[#123049] p-4">
             <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-[#4F7590]">
-              Cernix interpretation
+              Reviewed interpretation
             </p>
             <p className="text-sm leading-relaxed text-[#E9F3F8]">
               Refund operations may be safely retried. Duplicate requests are
@@ -170,7 +167,6 @@ export function ExampleClaimSection() {
             </p>
           </div>
 
-          {/* Verdict */}
           <div className="rounded-lg border border-[#FFC94D]/30 bg-[#123049] p-4">
             <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-[#4F7590]">
               Verdict
@@ -201,40 +197,34 @@ export function ExampleClaimSection() {
 export function AgentWorkflowSection() {
   const agents = [
     {
-      icon: Cpu,
-      role: "Claim Analyst",
+      icon: Camera,
+      role: "Snapshot ingest",
       description:
-        "Extracts and normalizes technical claims from submission documents. Preserves qualifiers and identifies verifiability.",
+        "Resolves an exact commit and builds an immutable manifest of admitted public repository files. No clone, build, or execution.",
     },
     {
-      icon: Search,
-      role: "Repository Investigator",
+      icon: ListTree,
+      role: "Investigation planner",
       description:
-        "Traces claims through source files, call paths, and module boundaries. Collects direct code evidence.",
+        "Uses Qwen to decompose the approved claim into obligation tasks scoped to the snapshot manifest.",
     },
     {
-      icon: Database,
-      role: "Delivery Investigator",
+      icon: Microscope,
+      role: "Repository investigator",
       description:
-        "Inspects CI configuration, test coverage, deployment manifests, and cloud usage evidence.",
-    },
-    {
-      icon: Eye,
-      role: "Maintenance Investigator",
-      description:
-        "Evaluates commit history, dependency management, documentation quality, and project governance.",
+        "Runs lexical search over admitted files and uses Qwen only on retrieved excerpts to collect evidence candidates.",
     },
     {
       icon: ShieldAlert,
-      role: "Skeptic Agent",
+      role: "Skeptic agent",
       description:
-        "Challenges weak findings and accepted evidence. Triggers reinvestigation when conclusions are insufficiently supported.",
+        "Challenges provisional conclusions, records severity, and can trigger bounded reinvestigation when support is weak.",
     },
     {
       icon: Scale,
-      role: "Evidence Judge",
+      role: "Evidence judge",
       description:
-        "Reconciles all evidence items, challenge resolutions, and limitations into a final verdict with explicit reasoning.",
+        "Reconciles evidence, challenges, and gaps into a final verdict with explicit limitations and maintainer actions.",
     },
   ];
 
@@ -242,15 +232,15 @@ export function AgentWorkflowSection() {
     <section className="border-b border-[#1E4560] px-6 py-14 md:px-12">
       <div className="mx-auto max-w-6xl">
         <p className="mb-3 font-mono text-[10px] uppercase tracking-widest text-[#4F7590]">
-          Multi-agent workflow
+          Durable worker pipeline
         </p>
         <h2 className="mb-2 text-balance text-2xl font-semibold text-[#E9F3F8]">
-          Specialized agents. Adversarial validation.
+          Five workers. Adversarial validation.
         </h2>
         <p className="mb-10 max-w-2xl text-sm leading-relaxed text-[#86ADC2]">
-          Each investigation is handled by a coordinated team of specialized
-          agents. The Skeptic Agent challenges every finding before a verdict
-          is issued.
+          Each stage is a separate PostgreSQL-backed worker process. Qwen
+          (Alibaba DashScope) powers planning, investigation, skeptic review,
+          and judgment. Human approval happens before automation starts.
         </p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {agents.map((agent) => {
@@ -304,9 +294,10 @@ export function AudienceSection() {
               For everyone who needs to trust a technical claim.
             </h2>
             <p className="text-sm leading-relaxed text-[#86ADC2]">
-              Cernix is used by reviewers who need to make decisions from
-              project submissions, and by maintainers who need to understand
-              where their evidence is weak.
+              Reviewers use Cernix to examine assertions in submissions.
+              Maintainers use it to see where repository evidence is strong or
+              thin. Scope is public source at a fixed commit — not runtime
+              behavior or private infrastructure.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -338,9 +329,8 @@ export function CtaSection() {
             Trace the evidence. Not the claim.
           </h2>
           <p className="mb-8 text-sm text-[#86ADC2]">
-            Submit a public repository and a submission document. Cernix will
-            extract the claims, investigate the evidence, and return a
-            traceable report.
+            Sign in, submit a public repository with one focus claim, and follow
+            the investigation through to a durable evidence report.
           </p>
           <div className="flex flex-wrap justify-center gap-3">
             <Link
